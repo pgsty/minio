@@ -71,6 +71,46 @@ dockers:
       - LICENSE
       - CREDITS
 
+  - id: minio-distroless-amd64
+    ids:
+      - minio
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.distroless
+    use: buildx
+    image_templates:
+      - "pgsty/minio:{{ .Tag }}-distroless-amd64"
+      - "pgsty/minio:latest-distroless-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    extra_files:
+      - dockerscripts/download-static-curl.sh
+      - LICENSE
+      - CREDITS
+
+  - id: minio-distroless-arm64
+    ids:
+      - minio
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.distroless
+    use: buildx
+    image_templates:
+      - "pgsty/minio:{{ .Tag }}-distroless-arm64"
+      - "pgsty/minio:latest-distroless-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.version={{ .Tag }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    extra_files:
+      - dockerscripts/download-static-curl.sh
+      - LICENSE
+      - CREDITS
+
 docker_manifests:
   - name_template: "pgsty/minio:{{ .Tag }}"
     image_templates:
@@ -80,6 +120,14 @@ docker_manifests:
     image_templates:
       - "pgsty/minio:latest-amd64"
       - "pgsty/minio:latest-arm64"
+  - name_template: "pgsty/minio:{{ .Tag }}-distroless"
+    image_templates:
+      - "pgsty/minio:{{ .Tag }}-distroless-amd64"
+      - "pgsty/minio:{{ .Tag }}-distroless-arm64"
+  - name_template: "pgsty/minio:latest-distroless"
+    image_templates:
+      - "pgsty/minio:latest-distroless-amd64"
+      - "pgsty/minio:latest-distroless-arm64"
 
 checksum:
   name_template: "minio_{{ .Env.PKG_VERSION }}_checksums.txt"

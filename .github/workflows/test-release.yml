@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/goreleaser.yml"
       - "Dockerfile.goreleaser"
+      - "Dockerfile.distroless"
       - "minio.service"
       - ".github/workflows/release.yml"
       - ".github/workflows/test-release.yml"

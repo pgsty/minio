@@ -1,0 +1,83 @@
+FROM golang:1.26.1-alpine AS build
+
+ARG TARGETARCH
+
+ENV GOPATH=/go
+ENV CGO_ENABLED=0
+
+ARG MC_REPO=pgsty/mc
+ARG MC_VERSION=latest
+
+RUN apk add -U --no-cache \
+    ca-certificates \
+    bash \
+    curl \
+    jq && \
+    case "${TARGETARCH}" in \
+      amd64) MC_ARCH=amd64 ;; \
+      arm64) MC_ARCH=arm64 ;; \
+      *) echo "Unsupported TARGETARCH=${TARGETARCH}"; exit 1 ;; \
+    esac && \
+    if [ "${MC_VERSION}" = "latest" ]; then \
+      MC_RELEASE_URL="https://api.github.com/repos/${MC_REPO}/releases/latest"; \
+    else \
+      MC_RELEASE_URL="https://api.github.com/repos/${MC_REPO}/releases/tags/${MC_VERSION}"; \
+    fi && \
+    curl -fsSL "${MC_RELEASE_URL}" -o /tmp/mc-release.json && \
+    MC_ARCHIVE_URL=$(jq -r --arg arch "${MC_ARCH}" \
+      '.assets[] | select(.name | endswith("_linux_" + $arch + ".tar.gz")) | .browser_download_url' \
+      /tmp/mc-release.json | head -n 1) && \
+    MC_CHECKSUM_URL=$(jq -r \
+      '.assets[] | select(.name | endswith("_checksums.txt")) | .browser_download_url' \
+      /tmp/mc-release.json | head -n 1) && \
+    [ -n "${MC_ARCHIVE_URL}" ] || { echo "Cannot find mcli archive for linux/${MC_ARCH}"; exit 1; } && \
+    [ -n "${MC_CHECKSUM_URL}" ] || { echo "Cannot find mcli checksums file"; exit 1; } && \
+    ARCHIVE_NAME=$(basename "${MC_ARCHIVE_URL}") && \
+    echo "Downloading ${ARCHIVE_NAME} ..." && \
+    curl -fsSL "${MC_ARCHIVE_URL}" -o /tmp/mcli.tar.gz && \
+    curl -fsSL "${MC_CHECKSUM_URL}" -o /tmp/mcli_checksums.txt && \
+    EXPECTED=$(grep "  ${ARCHIVE_NAME}$" /tmp/mcli_checksums.txt | awk '{print $1}') && \
+    ACTUAL=$(sha256sum /tmp/mcli.tar.gz | awk '{print $1}') && \
+    [ -n "${EXPECTED}" ] || { echo "Checksum entry not found for ${ARCHIVE_NAME}"; exit 1; } && \
+    [ "${EXPECTED}" = "${ACTUAL}" ] || { echo "Checksum mismatch: expected ${EXPECTED}, got ${ACTUAL}"; exit 1; } && \
+    echo "Checksum OK: ${ACTUAL}" && \
+    mkdir -p /tmp/mcli-extract && \
+    tar -xzf /tmp/mcli.tar.gz -C /tmp/mcli-extract/ && \
+    if [ -f /tmp/mcli-extract/mcli ]; then \
+      cp /tmp/mcli-extract/mcli /go/bin/mcli; \
+    elif [ -f /tmp/mcli-extract/mc ]; then \
+      cp /tmp/mcli-extract/mc /go/bin/mcli; \
+    else \
+      echo "No mc or mcli binary found in archive:"; ls -la /tmp/mcli-extract/; exit 1; \
+    fi && \
+    chmod +x /go/bin/mcli
+
+COPY dockerscripts/download-static-curl.sh /build/download-static-curl
+RUN chmod +x /build/download-static-curl && \
+    /build/download-static-curl
+
+FROM gcr.io/distroless/static-debian13
+
+LABEL maintainer="pgsty <https://github.com/pgsty/minio>" \
+      description="MinIO community fork (distroless), build by pgsty"
+
+ENV MINIO_ACCESS_KEY_FILE=access_key \
+    MINIO_SECRET_KEY_FILE=secret_key \
+    MINIO_ROOT_USER_FILE=access_key \
+    MINIO_ROOT_PASSWORD_FILE=secret_key \
+    MINIO_KMS_SECRET_KEY_FILE=kms_master_key \
+    MINIO_UPDATE_MINISIGN_PUBKEY="RWTx5Zr1tiHQLwG9keckT0c45M3AGeHD6IvimQHpyRywVWGbP1aVSGav" \
+    MINIO_CONFIG_ENV_FILE=config.env \
+    MC_CONFIG_DIR=/tmp/.mc
+
+COPY minio /usr/bin/minio
+COPY --from=build /go/bin/mcli /usr/bin/mcli
+COPY --from=build /go/bin/mcli /usr/bin/mc
+COPY --from=build /go/bin/curl* /usr/bin/
+COPY LICENSE /licenses/LICENSE
+COPY CREDITS /licenses/CREDITS
+
+EXPOSE 9000
+VOLUME ["/data"]
+
+ENTRYPOINT ["/usr/bin/minio"]
