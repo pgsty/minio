@@ -1,17 +1,16 @@
 apiVersion: v1
-description: Silo, a community-maintained MinIO-compatible object store
+description: High Performance Object Storage
 name: minio
 version: 5.5.0
 appVersion: RELEASE.2026-06-18T00-00-00Z
 keywords:
   - minio
-  - silo
   - storage
   - object-storage
   - s3
   - cluster
 home: https://silo.pigsty.io
-icon: https://raw.githubusercontent.com/pgsty/minio/master/.github/logo.svg
+icon: https://min.io/resources/img/logo/MINIO_wordmark.png
 sources:
 - https://github.com/pgsty/minio
 maintainers:

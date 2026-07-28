@@ -1,38 +1,24 @@
-# Silo Community Helm Chart
+# MinIO Community Helm Chart
 
-[![license](https://img.shields.io/badge/license-AGPL%20V3-blue)](https://github.com/pgsty/minio/blob/master/LICENSE)
-[![source](https://img.shields.io/badge/source-pgsty%2Fminio-blue?logo=github)](https://github.com/pgsty/minio)
-[![image](https://img.shields.io/badge/image-pgsty%2Fminio-blue?logo=docker)](https://hub.docker.com/r/pgsty/minio)
+[![Slack](https://slack.min.io/slack?type=svg)](https://slack.min.io) [![license](https://img.shields.io/badge/license-AGPL%20V3-blue)](https://github.com/minio/minio/blob/master/LICENSE)
 
-Silo is a community-maintained, S3-compatible object store derived from MinIO. This chart deploys the Silo server directly on Kubernetes in standalone or distributed mode.
+MinIO is a High Performance Object Storage released under GNU Affero General Public License v3.0. It is API compatible with Amazon S3 cloud storage service. Use MinIO to build high performance infrastructure for machine learning, analytics and application data workloads.
 
-> [!IMPORTANT]
-> This chart is maintained in [`pgsty/minio`](https://github.com/pgsty/minio). Chart changes are linted, installed into Kind, and verified with an S3 write/read/delete test.
->
-> The MinIO Operator, Tenant CRDs, and operator lifecycle are **not maintained here**. This repository does not provide or plan to provide a Pigsty/Silo operator fork.
-
-## Pinned images
-
-The defaults are immutable multi-architecture references for `linux/amd64` and `linux/arm64`:
-
-| Workload | Repository | Release | Manifest digest |
-|:---------|:-----------|:--------|:----------------|
-| Server | `pgsty/minio` | `RELEASE.2026-06-18T00-00-00Z` | `sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b` |
-| Post-install jobs and tests | `pgsty/minio` | `RELEASE.2026-06-18T00-00-00Z` | `sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b` |
-
-The Silo image bundles `mcli` and an `mc` compatibility alias. When an image `digest` is set it takes precedence over `tag`. To select another release, update both fields; alternatively set `digest: ""` to use the tag alone.
+| IMPORTANT |
+| -------------------------- |
+| This direct-deployment chart is maintained in [`pgsty/minio`](https://github.com/pgsty/minio) and defaults to a fixed `pgsty/minio` release. The MinIO Operator, Tenant CRDs, and operator lifecycle are not maintained by this repository. |
 
 ## Introduction
 
-This chart bootstraps a Silo cluster on [Kubernetes](https://kubernetes.io) using the [Helm](https://helm.sh) package manager.
+This chart bootstraps MinIO Cluster on [Kubernetes](http://kubernetes.io) using the [Helm](https://helm.sh) package manager.
 
 ## Prerequisites
 
-- Helm 3 with a Kubernetes cluster configured.
+- Helm cli with Kubernetes cluster configured.
 - PV provisioner support in the underlying infrastructure. (We recommend using <https://github.com/minio/direct-csi>)
-- Kubernetes v1.25 or later is recommended. The current CI test version is recorded in [the Helm workflow](../../.github/workflows/helm.yml).
+- Use Kubernetes version v1.19 and later for best experience.
 
-## Configure the Silo Helm repository
+## Configure MinIO Helm repo
 
 ```bash
 helm repo add silo https://raw.githubusercontent.com/pgsty/minio/master
@@ -44,10 +30,7 @@ helm repo update silo
 Install this chart using:
 
 ```bash
-helm install my-release silo/minio \
-  --namespace minio \
-  --create-namespace \
-  --set rootUser=rootuser,rootPassword=rootpass123
+helm install --namespace minio --set rootUser=rootuser,rootPassword=rootpass123 --generate-name silo/minio
 ```
 
 The command deploys MinIO on the Kubernetes cluster in the default configuration. The [configuration](#configuration) section lists the parameters that can be configured during installation.
@@ -57,17 +40,7 @@ The command deploys MinIO on the Kubernetes cluster in the default configuration
 Minimal toy setup for testing purposes can be deployed using:
 
 ```bash
-helm install my-release silo/minio \
-  --namespace minio \
-  --create-namespace \
-  --set mode=standalone \
-  --set replicas=1 \
-  --set persistence.enabled=false \
-  --set resources.requests.memory=512Mi \
-  --set rootUser=rootuser \
-  --set rootPassword=rootpass123
-
-helm test my-release --namespace minio --logs
+helm install --set resources.requests.memory=512Mi --set replicas=1 --set persistence.enabled=false --set mode=standalone --set rootUser=rootuser,rootPassword=rootpass123 --generate-name silo/minio
 ```
 
 ### Upgrading the Chart
@@ -78,7 +51,7 @@ You can use Helm to update MinIO version in a live release. Assuming your releas
 helm get values my-release > old_values.yaml
 ```
 
-Update `image.tag` and `image.digest` together for the server release. If post-install jobs are enabled, update `mcImage.tag` and `mcImage.digest` to the same tested artifact. Then upgrade the release:
+Then change the field `image.tag` in `old_values.yaml` file with MinIO image tag you want to use. Now update the chart using
 
 ```bash
 helm upgrade -f old_values.yaml my-release silo/minio

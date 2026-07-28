@@ -32,28 +32,6 @@ Create chart name and version as used by the chart label.
 {{- end -}}
 
 {{/*
-Build the immutable server image reference. Digest takes precedence over tag.
-*/}}
-{{- define "minio.image" -}}
-  {{- if .Values.image.digest -}}
-    {{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
-  {{- else -}}
-    {{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
-  {{- end -}}
-{{- end -}}
-
-{{/*
-Build the immutable client/job image reference. Digest takes precedence over tag.
-*/}}
-{{- define "minio.mcImage" -}}
-  {{- if .Values.mcImage.digest -}}
-    {{- printf "%s@%s" .Values.mcImage.repository .Values.mcImage.digest -}}
-  {{- else -}}
-    {{- printf "%s:%s" .Values.mcImage.repository .Values.mcImage.tag -}}
-  {{- end -}}
-{{- end -}}
-
-{{/*
 Return the appropriate apiVersion for networkpolicy.
 */}}
 {{- define "minio.networkPolicy.apiVersion" -}}

@@ -29,15 +29,3 @@ Console: [`georgmangold/console`](https://github.com/georgmangold/console/), a c
 Ansible Deployment: [https://pigsty.io/docs/minio](https://pigsty.io/docs/minio)
 
 APT/YUM repo for `minio` and `mcli` binary: [https://pigsty.io/docs/infra](https://pigsty.io/docs/repo/infra/list/#object-storage)
-
-## Kubernetes delivery and scope
-
-This repository maintains the direct-deployment Helm chart in [`helm/minio`](helm/minio/README.md) for standalone and distributed Silo server deployments. Chart defaults use the version- and digest-pinned multi-architecture [`pgsty/minio`](https://hub.docker.com/r/pgsty/minio) image, and every chart change is checked by a real Kind install plus an S3 write/read/delete smoke test.
-
-```bash
-helm repo add silo https://raw.githubusercontent.com/pgsty/minio/master
-helm repo update silo
-helm install my-release silo/minio --namespace minio --create-namespace
-```
-
-The MinIO Operator, Tenant CRDs, and operator lifecycle are **not maintained by this repository**. There is no Pigsty/Silo operator fork here. Users who require an operator must select and validate a separate operator implementation; issues and pull requests for operator code should be filed with that implementation.

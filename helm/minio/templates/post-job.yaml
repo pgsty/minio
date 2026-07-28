@@ -88,7 +88,7 @@ spec:
       {{- if .Values.policies }}
       initContainers:
         - name: minio-make-policy
-          image: {{ include "minio.mcImage" . | quote }}
+          image: "{{ .Values.mcImage.repository }}:{{ .Values.mcImage.tag }}"
           {{- if .Values.makePolicyJob.securityContext.enabled }}
           {{- with .Values.makePolicyJob.containerSecurityContext }}
           securityContext: {{ toYaml . | nindent 12 }}
@@ -122,7 +122,7 @@ spec:
       containers:
         {{- if .Values.buckets }}
         - name: minio-make-bucket
-          image: {{ include "minio.mcImage" . | quote }}
+          image: "{{ .Values.mcImage.repository }}:{{ .Values.mcImage.tag }}"
           {{- if .Values.makeBucketJob.securityContext.enabled }}
           {{- with .Values.makeBucketJob.containerSecurityContext }}
           securityContext: {{ toYaml . | nindent 12 }}
@@ -155,7 +155,7 @@ spec:
         {{- end }}
         {{- if .Values.users }}
         - name: minio-make-user
-          image: {{ include "minio.mcImage" . | quote }}
+          image: "{{ .Values.mcImage.repository }}:{{ .Values.mcImage.tag }}"
           {{- if .Values.makeUserJob.securityContext.enabled }}
           {{- with .Values.makeUserJob.containerSecurityContext }}
           securityContext: {{ toYaml . | nindent 12 }}
@@ -188,7 +188,7 @@ spec:
         {{- end }}
         {{- if .Values.customCommands }}
         - name: minio-custom-command
-          image: {{ include "minio.mcImage" . | quote }}
+          image: "{{ .Values.mcImage.repository }}:{{ .Values.mcImage.tag }}"
           {{- if .Values.customCommandJob.securityContext.enabled }}
           {{- with .Values.customCommandJob.containerSecurityContext }}
           securityContext: {{ toYaml . | nindent 12 }}
@@ -224,7 +224,7 @@ spec:
         {{- end }}
         {{- if .Values.svcaccts }}
         - name: minio-make-svcacct
-          image: {{ include "minio.mcImage" . | quote }}
+          image: "{{ .Values.mcImage.repository }}:{{ .Values.mcImage.tag }}"
           {{- if .Values.makeServiceAccountJob.securityContext.enabled }}
           {{- with .Values.makeServiceAccountJob.containerSecurityContext }}
           securityContext: {{ toYaml . | nindent 12 }}
