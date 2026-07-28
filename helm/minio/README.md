@@ -1,27 +1,42 @@
-# MinIO Community Helm Chart
+# Silo Community Helm Chart
 
-[![Slack](https://slack.min.io/slack?type=svg)](https://slack.min.io) [![license](https://img.shields.io/badge/license-AGPL%20V3-blue)](https://github.com/minio/minio/blob/master/LICENSE)
+[![license](https://img.shields.io/badge/license-AGPL%20V3-blue)](https://github.com/pgsty/minio/blob/master/LICENSE)
+[![source](https://img.shields.io/badge/source-pgsty%2Fminio-blue?logo=github)](https://github.com/pgsty/minio)
+[![image](https://img.shields.io/badge/image-pgsty%2Fminio-blue?logo=docker)](https://hub.docker.com/r/pgsty/minio)
 
-MinIO is a High Performance Object Storage released under GNU Affero General Public License v3.0. It is API compatible with Amazon S3 cloud storage service. Use MinIO to build high performance infrastructure for machine learning, analytics and application data workloads.
+Silo is a community-maintained, S3-compatible object store derived from MinIO. This chart deploys the Silo server directly on Kubernetes in standalone or distributed mode.
 
-| IMPORTANT |
-| -------------------------- |
-| This Helm chart is community built, maintained, and supported. MinIO does not guarantee support for any given bug, feature request, or update referencing this chart. <br/><br/> MinIO publishes a separate [MinIO Kubernetes Operator and Tenant Helm Chart](https://github.com/minio/operator/tree/master/helm) that is officially maintained and supported. MinIO strongly recommends using the MinIO Kubernetes Operator for production deployments. See [Deploy Operator With Helm](https://silo.pigsty.io/operations/deployments/k8s-deploy-operator-helm-on-kubernetes.html?ref=github) for additional documentation. |
+> [!IMPORTANT]
+> This chart is maintained in [`pgsty/minio`](https://github.com/pgsty/minio). Chart changes are linted, installed into Kind, and verified with an S3 write/read/delete test.
+>
+> The MinIO Operator, Tenant CRDs, and operator lifecycle are **not maintained here**. This repository does not provide or plan to provide a Pigsty/Silo operator fork.
+
+## Pinned images
+
+The defaults are immutable multi-architecture references for `linux/amd64` and `linux/arm64`:
+
+| Workload | Repository | Release | Manifest digest |
+|:---------|:-----------|:--------|:----------------|
+| Server | `pgsty/minio` | `RELEASE.2026-06-18T00-00-00Z` | `sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b` |
+| Post-install jobs and tests | `pgsty/minio` | `RELEASE.2026-06-18T00-00-00Z` | `sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b` |
+
+The Silo image bundles `mcli` and an `mc` compatibility alias. When an image `digest` is set it takes precedence over `tag`. To select another release, update both fields; alternatively set `digest: ""` to use the tag alone.
 
 ## Introduction
 
-This chart bootstraps MinIO Cluster on [Kubernetes](http://kubernetes.io) using the [Helm](https://helm.sh) package manager.
+This chart bootstraps a Silo cluster on [Kubernetes](https://kubernetes.io) using the [Helm](https://helm.sh) package manager.
 
 ## Prerequisites
 
-- Helm cli with Kubernetes cluster configured.
+- Helm 3 with a Kubernetes cluster configured.
 - PV provisioner support in the underlying infrastructure. (We recommend using <https://github.com/minio/direct-csi>)
-- Use Kubernetes version v1.19 and later for best experience.
+- Kubernetes v1.25 or later is recommended. The current CI test version is recorded in [the Helm workflow](../../.github/workflows/helm.yml).
 
-## Configure MinIO Helm repo
+## Configure the Silo Helm repository
 
 ```bash
-helm repo add minio https://charts.min.io/
+helm repo add silo https://raw.githubusercontent.com/pgsty/minio/master
+helm repo update silo
 ```
 
 ### Installing the Chart
@@ -29,7 +44,10 @@ helm repo add minio https://charts.min.io/
 Install this chart using:
 
 ```bash
-helm install --namespace minio --set rootUser=rootuser,rootPassword=rootpass123 --generate-name minio/minio
+helm install my-release silo/minio \
+  --namespace minio \
+  --create-namespace \
+  --set rootUser=rootuser,rootPassword=rootpass123
 ```
 
 The command deploys MinIO on the Kubernetes cluster in the default configuration. The [configuration](#configuration) section lists the parameters that can be configured during installation.
@@ -39,7 +57,17 @@ The command deploys MinIO on the Kubernetes cluster in the default configuration
 Minimal toy setup for testing purposes can be deployed using:
 
 ```bash
-helm install --set resources.requests.memory=512Mi --set replicas=1 --set persistence.enabled=false --set mode=standalone --set rootUser=rootuser,rootPassword=rootpass123 --generate-name minio/minio
+helm install my-release silo/minio \
+  --namespace minio \
+  --create-namespace \
+  --set mode=standalone \
+  --set replicas=1 \
+  --set persistence.enabled=false \
+  --set resources.requests.memory=512Mi \
+  --set rootUser=rootuser \
+  --set rootPassword=rootpass123
+
+helm test my-release --namespace minio --logs
 ```
 
 ### Upgrading the Chart
@@ -50,10 +78,10 @@ You can use Helm to update MinIO version in a live release. Assuming your releas
 helm get values my-release > old_values.yaml
 ```
 
-Then change the field `image.tag` in `old_values.yaml` file with MinIO image tag you want to use. Now update the chart using
+Update `image.tag` and `image.digest` together for the server release. If post-install jobs are enabled, update `mcImage.tag` and `mcImage.digest` to the same tested artifact. Then upgrade the release:
 
 ```bash
-helm upgrade -f old_values.yaml my-release minio/minio
+helm upgrade -f old_values.yaml my-release silo/minio
 ```
 
 Default upgrade strategies are specified in the `values.yaml` file. Update these fields if you'd like to use a different strategy.
@@ -65,7 +93,7 @@ Refer the [Values file](./values.yaml) for all the possible config fields.
 You can specify each parameter using the `--set key=value[,key=value]` argument to `helm install`. For example,
 
 ```bash
-helm install --name my-release --set persistence.size=1Ti minio/minio
+helm install my-release --set persistence.size=1Ti silo/minio
 ```
 
 The above command deploys MinIO server with a 1Ti backing persistent volume.
@@ -73,7 +101,7 @@ The above command deploys MinIO server with a 1Ti backing persistent volume.
 Alternately, you can provide a YAML file that specifies parameter values while installing the chart. For example,
 
 ```bash
-helm install --name my-release -f values.yaml minio/minio
+helm install my-release -f values.yaml silo/minio
 ```
 
 ### Persistence
@@ -81,7 +109,7 @@ helm install --name my-release -f values.yaml minio/minio
 This chart provisions a PersistentVolumeClaim and mounts corresponding persistent volume to default location `/export`. You'll need physical storage available in the Kubernetes cluster for this to work. If you'd rather use `emptyDir`, disable PersistentVolumeClaim by:
 
 ```bash
-helm install --set persistence.enabled=false minio/minio
+helm install my-release --set persistence.enabled=false silo/minio
 ```
 
 > *"An emptyDir volume is first created when a Pod is assigned to a Node, and exists as long as that Pod is running on that node. When a Pod is removed from a node for any reason, the data in the emptyDir is deleted forever."*
@@ -95,7 +123,7 @@ If a Persistent Volume Claim already exists, specify it during installation.
 3. Install the chart
 
 ```bash
-helm install --set persistence.existingClaim=PVC_NAME minio/minio
+helm install my-release --set persistence.existingClaim=PVC_NAME silo/minio
 ```
 
 ### NetworkPolicy
@@ -134,7 +162,7 @@ kubectl create secret generic my-minio-secret --from-literal=rootUser=foobarbaz 
 Then install the chart, specifying that you want to use an existing secret:
 
 ```bash
-helm install --set existingSecret=my-minio-secret minio/minio
+helm install my-release --set existingSecret=my-minio-secret silo/minio
 ```
 
 The following fields are expected in the secret:
@@ -157,7 +185,7 @@ kubectl create secret generic tls-ssl-minio --from-file=path/to/private.key --fr
 Then install the chart, specifying that you want to use the TLS secret:
 
 ```bash
-helm install --set tls.enabled=true,tls.certSecret=tls-ssl-minio minio/minio
+helm install my-release --set tls.enabled=true,tls.certSecret=tls-ssl-minio silo/minio
 ```
 
 ### Installing certificates from third party CAs
@@ -191,7 +219,7 @@ or
 Install the chart, specifying the buckets you want to create after install:
 
 ```bash
-helm install --set buckets[0].name=bucket1,buckets[0].policy=none,buckets[0].purge=false minio/minio
+helm install my-release --set buckets[0].name=bucket1,buckets[0].policy=none,buckets[0].purge=false silo/minio
 ```
 
 Description of the configuration parameters used above -
@@ -205,7 +233,7 @@ Description of the configuration parameters used above -
 Install the chart, specifying the policies you want to create after install:
 
 ```bash
-helm install --set policies[0].name=mypolicy,policies[0].statements[0].resources[0]='arn:aws:s3:::bucket1',policies[0].statements[0].actions[0]='s3:ListBucket',policies[0].statements[0].actions[1]='s3:GetObject' minio/minio
+helm install my-release --set policies[0].name=mypolicy,policies[0].statements[0].resources[0]='arn:aws:s3:::bucket1',policies[0].statements[0].actions[0]='s3:ListBucket',policies[0].statements[0].actions[1]='s3:GetObject' silo/minio
 ```
 
 Description of the configuration parameters used above -
@@ -220,7 +248,7 @@ Description of the configuration parameters used above -
 Install the chart, specifying the users you want to create after install:
 
 ```bash
-helm install --set users[0].accessKey=accessKey,users[0].secretKey=secretKey,users[0].policy=none,users[1].accessKey=accessKey2,users[1].secretRef=existingSecret,users[1].secretKey=password,users[1].policy=none minio/minio
+helm install my-release --set users[0].accessKey=accessKey,users[0].secretKey=secretKey,users[0].policy=none,users[1].accessKey=accessKey2,users[1].secretRef=existingSecret,users[1].secretKey=password,users[1].policy=none silo/minio
 ```
 
 Description of the configuration parameters used above -
@@ -236,7 +264,7 @@ Description of the configuration parameters used above -
 Install the chart, specifying the service accounts you want to create after install:
 
 ```bash
-helm install --set svcaccts[0].accessKey=accessKey,svcaccts[0].secretKey=secretKey,svcaccts[0].user=parentUser,svcaccts[1].accessKey=accessKey2,svcaccts[1].secretRef=existingSecret,svcaccts[1].secretKey=password,svcaccts[1].user=parentUser2 minio/minio
+helm install my-release --set svcaccts[0].accessKey=accessKey,svcaccts[0].secretKey=secretKey,svcaccts[0].user=parentUser,svcaccts[1].accessKey=accessKey2,svcaccts[1].secretRef=existingSecret,svcaccts[1].secretKey=password,svcaccts[1].user=parentUser2 silo/minio
 ```
 
 Description of the configuration parameters used above -

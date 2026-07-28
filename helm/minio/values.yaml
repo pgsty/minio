@@ -10,22 +10,26 @@ fullnameOverride: ""
 ##
 clusterDomain: cluster.local
 
-## Set default image, imageTag, and imagePullPolicy. mode is used to indicate the
+## Silo server image. The default is pinned by both release tag and multi-arch
+## manifest digest. When digest is non-empty it takes precedence over tag.
 ##
 image:
-  repository: quay.io/minio/minio
-  tag: RELEASE.2024-12-18T13-15-44Z
+  repository: pgsty/minio
+  tag: RELEASE.2026-06-18T00-00-00Z
+  digest: sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 # - name: "image-pull-secret"
 
-## Set default image, imageTag, and imagePullPolicy for the `mc` (the minio
-## client used to create a default bucket).
+## Image used by post-install jobs and Helm tests. pgsty/minio bundles the
+## maintained mcli binary and an mc compatibility alias, so these jobs use the
+## exact same pinned, multi-arch artifact as the server.
 ##
 mcImage:
-  repository: quay.io/minio/mc
-  tag: RELEASE.2024-11-21T17-21-54Z
+  repository: pgsty/minio
+  tag: RELEASE.2026-06-18T00-00-00Z
+  digest: sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b
   pullPolicy: IfNotPresent
 
 ## minio mode, i.e. standalone or distributed
@@ -127,13 +131,13 @@ pools: 1
 ## TLS Settings for MinIO
 tls:
   enabled: false
-  ## Create a secret with private.key and public.crt files and pass that here. Ref: https://github.com/minio/minio/tree/master/docs/tls/kubernetes#2-create-kubernetes-secret
+  ## Create a secret with private.key and public.crt files and pass that here. Ref: https://github.com/pgsty/minio/tree/master/docs/tls/kubernetes#2-create-kubernetes-secret
   certSecret: ""
   publicCrt: public.crt
   privateKey: private.key
 
 ## Trusted Certificates Settings for MinIO. Ref: https://silo.pigsty.io/operations/network-encryption.html#third-party-certificate-authorities
-## Bundle multiple trusted certificates into one secret and pass that here. Ref: https://github.com/minio/minio/tree/master/docs/tls/kubernetes#2-create-kubernetes-secret
+## Bundle multiple trusted certificates into one secret and pass that here. Ref: https://github.com/pgsty/minio/tree/master/docs/tls/kubernetes#2-create-kubernetes-secret
 ## When using self-signed certificates, remember to include MinIO's own certificate in the bundle with key public.crt.
 ## If certSecret is left empty and tls is enabled, this chart installs the public certificate from .Values.tls.certSecret.
 trustedCertsSecret: ""
@@ -617,7 +621,11 @@ metrics:
     # Scrape timeout, for example `scrapeTimeout: 10s`
     scrapeTimeout: ~
 
-## ETCD settings: https://github.com/minio/minio/blob/master/docs/sts/etcd.md
+## Enable the `helm test` S3 write/read/delete smoke test.
+tests:
+  enabled: true
+
+## ETCD settings: https://github.com/pgsty/minio/blob/master/docs/sts/etcd.md
 ## Define endpoints to enable this section.
 etcd:
   endpoints: []

@@ -1,0 +1,52 @@
+{{- if .Values.tests.enabled }}
+{{- $scheme := .Values.tls.enabled | ternary "https" "http" }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "minio.fullname" . }}-test-connection
+  labels:
+    app: {{ include "minio.name" . }}-test
+    release: {{ .Release.Name }}
+    {{ include "minio.name" . }}-client: "true"
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  restartPolicy: Never
+  {{- include "minio.imagePullSecrets" . | nindent 2 }}
+  containers:
+    - name: s3-smoke
+      image: {{ include "minio.mcImage" . | quote }}
+      imagePullPolicy: {{ .Values.mcImage.pullPolicy }}
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          alias_name=silo-helm-test
+          bucket_name="silo-helm-test-$(date +%s)"
+          object_name=probe.txt
+          payload="silo helm smoke test"
+          mc alias set "${alias_name}" "{{ $scheme }}://{{ include "minio.fullname" . }}:{{ .Values.service.port }}" "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" {{ if .Values.tls.enabled }}--insecure{{ end }}
+          cleanup() {
+            mc rm --recursive --force "${alias_name}/${bucket_name}" >/dev/null 2>&1 || true
+            mc rb "${alias_name}/${bucket_name}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          mc mb --ignore-existing "${alias_name}/${bucket_name}"
+          printf '%s' "${payload}" | mc pipe "${alias_name}/${bucket_name}/${object_name}"
+          actual="$(mc cat "${alias_name}/${bucket_name}/${object_name}")"
+          test "${actual}" = "${payload}"
+          mc rm "${alias_name}/${bucket_name}/${object_name}"
+          mc rb "${alias_name}/${bucket_name}"
+          trap - EXIT
+      env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "minio.secretName" . }}
+              key: rootUser
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "minio.secretName" . }}
+              key: rootPassword
+{{- end }}

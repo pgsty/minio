@@ -90,7 +90,7 @@ spec:
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
-          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          image: {{ include "minio.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [
             "/bin/sh",

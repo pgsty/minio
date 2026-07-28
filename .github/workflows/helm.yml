@@ -1,0 +1,110 @@
+name: Helm Chart
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/helm.yml"
+      - "helm/**"
+      - "helm-releases/minio-*.tgz"
+      - "helm-reindex.sh"
+      - "index.yaml"
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/helm.yml"
+      - "helm/**"
+      - "helm-releases/minio-*.tgz"
+      - "helm-reindex.sh"
+      - "index.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  install-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: Verify packaged chart
+        run: |
+          set -euo pipefail
+          chart_version="$(awk '$1 == "version:" { print $2; exit }' helm/minio/Chart.yaml)"
+          chart_package="helm-releases/minio-${chart_version}.tgz"
+          test -f "${chart_package}"
+          echo "CHART_PACKAGE=${chart_package}" >> "${GITHUB_ENV}"
+          helm lint --strict "${chart_package}"
+
+          unpacked="$(mktemp -d)"
+          tar -xzf "${chart_package}" -C "${unpacked}"
+          diff -ru --exclude Chart.yaml helm/minio "${unpacked}/minio"
+
+          package_digest="$(sha256sum "${chart_package}" | awk '{ print $1 }')"
+          grep -F "digest: ${package_digest}" index.yaml
+          grep -F "https://raw.githubusercontent.com/pgsty/minio/master/${chart_package}" index.yaml
+
+      - name: Render and verify immutable images
+        run: |
+          set -euo pipefail
+          expected_image='pgsty/minio@sha256:dacff8306a6e0a734518533992dbdcca26bc1ca47f77cf47cb9945725f92b29b'
+          rendered="$(mktemp)"
+          helm template silo "${CHART_PACKAGE}" \
+            --namespace silo \
+            --set mode=standalone \
+            --set persistence.enabled=false > "${rendered}"
+          grep -F "image: \"${expected_image}\"" "${rendered}"
+          if grep -Eq 'image:.*(quay\.io/minio|minio/minio|minio/mc)' "${rendered}"; then
+            echo "Rendered chart still references an upstream MinIO image."
+            exit 1
+          fi
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          version: v0.31.0
+          kubectl_version: v1.35.0
+          node_image: kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+          cluster_name: silo-chart
+          wait: 120s
+
+      - name: Install chart
+        run: |
+          set -euo pipefail
+          helm install silo "${CHART_PACKAGE}" \
+            --namespace silo \
+            --create-namespace \
+            --wait \
+            --wait-for-jobs \
+            --timeout 10m \
+            --set mode=standalone \
+            --set replicas=1 \
+            --set persistence.enabled=false \
+            --set resources.requests.memory=512Mi \
+            --set rootUser=siloadmin \
+            --set rootPassword=silo-smoke-password \
+            --set 'buckets[0].name=bootstrap' \
+            --set 'buckets[0].policy=none' \
+            --set 'buckets[0].purge=false'
+          kubectl rollout status deployment/silo-minio --namespace silo --timeout=2m
+
+      - name: Run S3 smoke test
+        run: |
+          set -euo pipefail
+          helm test silo --namespace silo --logs --timeout 5m
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          helm status silo --namespace silo || true
+          kubectl get all --namespace silo -o wide || true
+          kubectl describe pods --namespace silo || true
+          kubectl logs --namespace silo --all-containers=true --prefix=true --selector release=silo || true
