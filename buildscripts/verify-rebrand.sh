@@ -112,6 +112,21 @@ require_text .github/workflows/release.yml "packages_checksums.txt"
 require_text .github/workflows/docker-release.yml "Attest multi-architecture image provenance"
 require_text .github/workflows/docker-release.yml "index.docker.io/pgsty/silo"
 
+# Copyright notices credit both parties with fixed terms: upstream MinIO
+# development ends at its own last year, and the fork's own term starts when
+# the fork did. Deriving the upstream end year from the clock would extend
+# MinIO's copyright term every January.
+require_text cmd/build-constants.go 'upstreamCopyrightEndYear = "2025"'
+require_text cmd/build-constants.go 'forkCopyrightStartYear = "2025"'
+require_text cmd/main.go 'upstreamCopyrightEndYear'
+reject_text cmd/main.go 'CopyrightYear = strconv.Itoa(time.Now().Year())'
+
+# Contribution policy: no CLA, inbound=outbound, DCO sign-off enforced in CI.
+require_file .github/workflows/dco.yml
+require_text .github/workflows/dco.yml "Signed-off-by"
+require_text CONTRIBUTING.md "developercertificate.org"
+require_text CONTRIBUTING.md "No CLA"
+
 for file in .github/nfpm.yml Dockerfile.goreleaser silo.service; do
 	reject_text "${file}" "/usr/bin/minio"
 	reject_text "${file}" "/usr/local/bin/minio"

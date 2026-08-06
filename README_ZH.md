@@ -221,6 +221,8 @@ go build -o silo .
 
 Issue 与 Pull Request 应说明受影响版本、复现步骤、影响、预期行为、测试与兼容性说明。大型改动请先提交 Issue 讨论。
 
+本项目不要求签署 CLA：贡献按项目许可证（AGPL-3.0-or-later，inbound=outbound）接收，贡献者保留自己的版权。每个提交都必须按照 [DCO](https://developercertificate.org/) 签署（`git commit -s`），详见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+
 ## 背景
 
 本项目源于上游社区发行与维护模式的变化。维护者对相关变化的分析、替代方案评估与早期维护记录见以下文章：

@@ -223,6 +223,8 @@ Useful contributions include security and dependency updates, reproducible bug f
 
 Issues and pull requests should include the affected version, reproduction steps, impact, expected behavior, tests, and compatibility notes. Discuss large changes in an issue first.
 
+There is no CLA: contributions are accepted inbound=outbound under the project license (AGPL-3.0-or-later) and contributors keep their copyright. Every commit must be signed off (`git commit -s`) per the [Developer Certificate of Origin](https://developercertificate.org/); see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## Background
 
 This project was created in response to changes in the upstream community distribution and maintenance model. The maintainer’s analysis, alternatives considered, and early maintenance record are documented below:

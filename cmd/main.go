@@ -25,9 +25,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/minio/cli"
 	"github.com/minio/minio/internal/color"
@@ -176,9 +174,8 @@ func newApp(name string) *cli.App {
 }
 
 func startupBanner(banner io.Writer) {
-	CopyrightYear = strconv.Itoa(time.Now().Year())
-	fmt.Fprintln(banner, color.Blue("Copyright:")+color.Bold(" 2015-%s MinIO, Inc.", CopyrightYear))
-	fmt.Fprintln(banner, color.Blue("Modifications:")+color.Bold(" Copyright 2026 PGSTY contributors"))
+	fmt.Fprintln(banner, color.Blue("Copyright:")+color.Bold(" 2015-%s MinIO, Inc.", upstreamCopyrightEndYear))
+	fmt.Fprintln(banner, color.Blue("Modifications:")+color.Bold(" Copyright %s-%s PGSTY", forkCopyrightStartYear, copyrightEndYear()))
 	fmt.Fprintln(banner, color.Blue("License:")+color.Bold(" "+MinioLicense))
 	fmt.Fprintln(banner, color.Blue("Version:")+color.Bold(" %s (%s %s/%s)", ReleaseTag, runtime.Version(), runtime.GOOS, runtime.GOARCH))
 }
@@ -188,8 +185,8 @@ func versionBanner(c *cli.Context) io.Reader {
 	fmt.Fprintln(banner, color.Bold("%s version %s (commit-id=%s)", c.App.Name, c.App.Version, CommitID))
 	fmt.Fprintln(banner, color.Blue("Runtime:")+color.Bold(" %s %s/%s", runtime.Version(), runtime.GOOS, runtime.GOARCH))
 	fmt.Fprintln(banner, color.Blue("License:")+color.Bold(" GNU AGPLv3 - https://www.gnu.org/licenses/agpl-3.0.html"))
-	fmt.Fprintln(banner, color.Blue("Copyright:")+color.Bold(" 2015-%s MinIO, Inc.", CopyrightYear))
-	fmt.Fprintln(banner, color.Blue("Modifications:")+color.Bold(" Copyright 2026 PGSTY contributors"))
+	fmt.Fprintln(banner, color.Blue("Copyright:")+color.Bold(" 2015-%s MinIO, Inc.", upstreamCopyrightEndYear))
+	fmt.Fprintln(banner, color.Blue("Modifications:")+color.Bold(" Copyright %s-%s PGSTY", forkCopyrightStartYear, copyrightEndYear()))
 	fmt.Fprintln(banner, color.Blue("Source compatibility:")+color.Bold(" based on MinIO technology"))
 	return strings.NewReader(banner.String())
 }

@@ -1,0 +1,43 @@
+name: DCO
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Verify DCO sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Every non-merge commit in the pull request must carry a Signed-off-by
+      # trailer matching the commit author's email, certifying the Developer
+      # Certificate of Origin 1.1 (https://developercertificate.org/).
+      # Only commits authored from a GitHub-issued bot address are exempt; a
+      # display name is attacker-controlled and must never grant the exemption.
+      - name: Check Signed-off-by trailers
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          fail=0
+          while read -r sha; do
+            author_name="$(git log -1 --format='%an' "${sha}")"
+            author_email="$(git log -1 --format='%ae' "${sha}")"
+            case "${author_email}" in
+              *"[bot]@users.noreply.github.com") continue ;;
+            esac
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "${sha}" |
+              grep -qiF "<${author_email}>"; then
+              echo "::error::commit ${sha} by ${author_name} <${author_email}> lacks a matching Signed-off-by trailer; sign with 'git commit -s', repair with 'git rebase --signoff'"
+              fail=1
+            fi
+          done < <(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}")
+          exit "${fail}"
