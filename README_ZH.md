@@ -1,3 +1,12 @@
+> [!WARNING]
+> **本分支已归档，不再接受任何修改。**
+>
+> `minio` 分支保留本项目以 MinIO 身份存在的最后状态。开发已迁移到 **[`main`](https://github.com/pgsty/silo/tree/main)** 分支，项目在那里以 **Silo** 的身份继续维护，二进制、软件包、systemd unit、容器镜像与 Helm chart 全部更名为 `silo`。2026-08-06，仓库由 `pgsty/minio` 更名为 **[`pgsty/silo`](https://github.com/pgsty/silo)**，默认分支由 `master` 更名为 `main`。
+>
+> 本分支上切出的最后一个版本是 **[`RELEASE.2026-08-04T00-00-00Z`](https://github.com/pgsty/silo/releases/tag/RELEASE.2026-08-04T00-00-00Z)**（2026-08-04）。它的 19 个资产使用 `minio` 命名，对应容器镜像为 `docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z`。这些产物保持已发布状态且不做改动 —— 不移动、不重新签名、不删除任何 tag。如果你需要以原本 MinIO 形态维持的归档构件，就在本分支以及截止到该 tag 的历次发布中。此后的版本使用 `silo` 命名。
+>
+> **更名没有改变任何对外接口。** `MINIO_*` 环境变量、`minio_*` 指标、`x-minio-*` 头、`/minio/*` 路由、`.minio.sys` 磁盘布局、IAM 与 ARN 取值，以及 Go 模块路径 `github.com/minio/minio`，在 `main` 上全部原样保留。Silo 服务端可直接读取本版本写入的数据；新旧软件包并存安装，因此迁移与回滚始终是管理员显式触发的动作。
+
 <h1 align="center">
   <img src=".github/silo.svg" alt="" height="80">
   <img src=".github/silo-word.svg" alt="SILO" height="80">

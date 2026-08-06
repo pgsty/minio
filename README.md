@@ -1,3 +1,12 @@
+> [!WARNING]
+> **This branch is archived and receives no further changes.**
+>
+> `minio` holds the final state of this project under the MinIO identity. Development continues on **[`main`](https://github.com/pgsty/silo/tree/main)**, where the project is named **Silo** and the binary, packages, systemd unit, container image, and Helm chart are all named `silo`. On 2026-08-06 the repository was renamed `pgsty/minio` → **[`pgsty/silo`](https://github.com/pgsty/silo)** and its default branch `master` → `main`.
+>
+> The last release cut from this branch is **[`RELEASE.2026-08-04T00-00-00Z`](https://github.com/pgsty/silo/releases/tag/RELEASE.2026-08-04T00-00-00Z)** (2026-08-04). Its 19 assets carry the `minio` artifact names, and the matching container image is `docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z`. Those artifacts stay published and unmodified — no tag is moved, re-signed, or removed. If you need the artifacts maintained under the original MinIO identity, this branch and the releases up to that tag are where they live. Later releases carry the `silo` names.
+>
+> **Nothing on the wire changed with the rename.** `MINIO_*` environment variables, `minio_*` Prometheus metrics, `x-minio-*` headers, `/minio/*` routes, the `.minio.sys` on-disk layout, IAM and ARN values, and the `github.com/minio/minio` Go module path are all preserved on `main`. A Silo server reads data written by this release, and the packages install side by side, so migrating or rolling back stays an explicit administrator action.
+
 <h1 align="center">
   <img src=".github/silo-word.svg" alt="SILO" height="80">
 </h1>
