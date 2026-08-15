@@ -24,10 +24,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio/internal/auth"
 	xhttp "github.com/minio/minio/internal/http"
+	"github.com/minio/pkg/v3/policy"
 )
 
 func TestAPIDeleteObjectAuthorizationAction(t *testing.T) {
@@ -127,10 +130,10 @@ func TestAPIDeleteMultipleObjectsAuthorizationAction(t *testing.T) {
 }
 
 func testAPIDeleteMultipleObjectsAuthorizationAction(obj ObjectLayer, instanceType, bucketName string, apiRouter http.Handler,
-	credentials auth.Credentials, t *testing.T,
+	_ auth.Credentials, t *testing.T,
 ) {
-	versionIDs := make(map[string]string, 4)
-	for _, objectName := range []string{"object-current", "object-version", "version-current", "version-exact"} {
+	versionIDs := make(map[string]string, 6)
+	for _, objectName := range []string{"object-current", "object-version", "version-current", "version-exact", "version-denied"} {
 		data := []byte(objectName)
 		info, err := obj.PutObject(t.Context(), bucketName, objectName,
 			mustGetPutObjReader(t, bytes.NewReader(data), int64(len(data)), "", ""), ObjectOptions{Versioned: true})
@@ -139,6 +142,21 @@ func testAPIDeleteMultipleObjectsAuthorizationAction(obj ObjectLayer, instanceTy
 		}
 		versionIDs[objectName] = info.VersionID
 	}
+	markerData := []byte("delete-marker-exact")
+	markerObject := "delete-marker-exact"
+	markerBase, err := obj.PutObject(t.Context(), bucketName, markerObject,
+		mustGetPutObjReader(t, bytes.NewReader(markerData), int64(len(markerData)), "", ""), ObjectOptions{Versioned: true})
+	if err != nil {
+		t.Fatalf("%s: put delete-marker base: %v", instanceType, err)
+	}
+	marker, err := obj.DeleteObject(t.Context(), bucketName, markerObject, ObjectOptions{Versioned: true})
+	if err != nil {
+		t.Fatalf("%s: create delete marker: %v", instanceType, err)
+	}
+	if !marker.DeleteMarker || marker.VersionID == "" {
+		t.Fatalf("%s: delete did not create a versioned marker: %+v", instanceType, marker)
+	}
+	versionIDs[markerObject] = marker.VersionID
 	nullData := []byte("null-exact")
 	if _, err := obj.PutObject(t.Context(), bucketName, "null-exact",
 		mustGetPutObjReader(t, bytes.NewReader(nullData), int64(len(nullData)), "", ""), ObjectOptions{}); err != nil {
@@ -148,21 +166,24 @@ func testAPIDeleteMultipleObjectsAuthorizationAction(obj ObjectLayer, instanceTy
 	policyBytes := fmt.Appendf(nil, `{
 		"Version":"2012-10-17",
 		"Statement":[
-			{"Effect":"Allow","Principal":"*","Action":"s3:DeleteObject","Resource":["arn:aws:s3:::%[1]s/object-current","arn:aws:s3:::%[1]s/object-version"]},
-			{"Effect":"Allow","Principal":"*","Action":"s3:DeleteObjectVersion","Resource":["arn:aws:s3:::%[1]s/version-current","arn:aws:s3:::%[1]s/version-exact","arn:aws:s3:::%[1]s/null-exact"]}
+			{"Effect":"Allow","Action":"s3:DeleteObject","Resource":["arn:aws:s3:::%[1]s/object-current","arn:aws:s3:::%[1]s/object-version"]},
+			{"Effect":"Allow","Action":"s3:DeleteObjectVersion","Resource":["arn:aws:s3:::%[1]s/version-current","arn:aws:s3:::%[1]s/version-exact","arn:aws:s3:::%[1]s/version-denied","arn:aws:s3:::%[1]s/null-exact","arn:aws:s3:::%[1]s/delete-marker-exact"]},
+			{"Effect":"Deny","Action":"s3:DeleteObjectVersion","Resource":"arn:aws:s3:::%[1]s/version-denied","Condition":{"StringEquals":{"s3:versionid":"%[2]s"}}}
 		]
-	}`, bucketName)
-	putAnonymousDeletePolicy(t, instanceType, bucketName, apiRouter, credentials, policyBytes)
+	}`, bucketName, versionIDs["version-denied"])
+	identity := putDeleteIdentityPolicy(t, instanceType, policyBytes)
 
 	deleteBody := encodeResponse(DeleteObjectsRequest{Objects: []ObjectToDelete{
 		{ObjectV: ObjectV{ObjectName: "object-current"}},
 		{ObjectV: ObjectV{ObjectName: "object-version", VersionID: versionIDs["object-version"]}},
 		{ObjectV: ObjectV{ObjectName: "version-current"}},
 		{ObjectV: ObjectV{ObjectName: "version-exact", VersionID: versionIDs["version-exact"]}},
+		{ObjectV: ObjectV{ObjectName: "version-denied", VersionID: versionIDs["version-denied"]}},
 		{ObjectV: ObjectV{ObjectName: "null-exact", VersionID: nullVersionID}},
+		{ObjectV: ObjectV{ObjectName: markerObject, VersionID: versionIDs[markerObject]}},
 	}})
-	deleteReq, err := newTestRequest(http.MethodPost, getDeleteMultipleObjectsURL("", bucketName),
-		int64(len(deleteBody)), bytes.NewReader(deleteBody))
+	deleteReq, err := newTestSignedRequestV4(http.MethodPost, getDeleteMultipleObjectsURL("", bucketName),
+		int64(len(deleteBody)), bytes.NewReader(deleteBody), identity.AccessKey, identity.SecretKey, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,12 +201,12 @@ func testAPIDeleteMultipleObjectsAuthorizationAction(obj ObjectLayer, instanceTy
 	for _, object := range response.DeletedObjects {
 		deleted[object.ObjectName] = object
 	}
-	for _, objectName := range []string{"object-current", "version-exact", "null-exact"} {
+	for _, objectName := range []string{"object-current", "version-exact", "null-exact", markerObject} {
 		if _, ok := deleted[objectName]; !ok {
 			t.Errorf("%s: expected %q to be deleted: %+v", instanceType, objectName, response.DeletedObjects)
 		}
 	}
-	if len(deleted) != 3 {
+	if len(deleted) != 4 {
 		t.Errorf("%s: unexpected deleted objects: %+v", instanceType, response.DeletedObjects)
 	}
 
@@ -193,14 +214,61 @@ func testAPIDeleteMultipleObjectsAuthorizationAction(obj ObjectLayer, instanceTy
 	for _, deleteErr := range response.Errors {
 		errorsByKey[deleteErr.Key] = deleteErr
 	}
-	for _, objectName := range []string{"object-version", "version-current"} {
+	for _, objectName := range []string{"object-version", "version-current", "version-denied"} {
 		if deleteErr, ok := errorsByKey[objectName]; !ok || deleteErr.Code != errorCodes[ErrAccessDenied].Code {
 			t.Errorf("%s: %q did not return AccessDenied: %+v", instanceType, objectName, response.Errors)
 		}
 	}
-	if len(errorsByKey) != 2 {
+	if len(errorsByKey) != 3 {
 		t.Errorf("%s: unexpected delete errors: %+v", instanceType, response.Errors)
 	}
+
+	for _, objectName := range []string{"object-version", "version-current", "version-denied"} {
+		versionID := versionIDs[objectName]
+		if _, err = obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{VersionID: versionID}); err != nil {
+			t.Errorf("%s: denied version %q of %q was not preserved: %v", instanceType, versionID, objectName, err)
+		}
+	}
+	if _, err = obj.GetObjectInfo(t.Context(), bucketName, markerObject, ObjectOptions{VersionID: markerBase.VersionID}); err != nil {
+		t.Errorf("%s: deleting marker %q also removed its underlying version %q: %v",
+			instanceType, versionIDs[markerObject], markerBase.VersionID, err)
+	}
+	for objectName, versionID := range map[string]string{
+		"version-exact": versionIDs["version-exact"],
+		"null-exact":    nullVersionID,
+		markerObject:    versionIDs[markerObject],
+	} {
+		if _, err = obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{VersionID: versionID}); !isErrVersionNotFound(err) {
+			t.Errorf("%s: authorized version %q of %q still exists: %v", instanceType, versionID, objectName, err)
+		}
+	}
+}
+
+func putDeleteIdentityPolicy(t *testing.T, instanceType string, policyBytes []byte) auth.Credentials {
+	t.Helper()
+	accessKey, secretKey, err := auth.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := auth.Credentials{AccessKey: accessKey, SecretKey: secretKey}
+	if _, err = globalIAMSys.CreateUser(t.Context(), credentials.AccessKey, madmin.AddOrUpdateUserReq{
+		SecretKey: credentials.SecretKey,
+		Status:    madmin.AccountEnabled,
+	}); err != nil {
+		t.Fatalf("%s: create delete-policy user: %v", instanceType, err)
+	}
+	parsed, err := policy.ParseConfig(strings.NewReader(string(policyBytes)))
+	if err != nil {
+		t.Fatalf("%s: parse delete identity policy: %v", instanceType, err)
+	}
+	policyName := "delete-action-" + mustGetUUID()
+	if _, err = globalIAMSys.SetPolicy(t.Context(), policyName, *parsed); err != nil {
+		t.Fatalf("%s: install delete identity policy: %v", instanceType, err)
+	}
+	if _, err = globalIAMSys.PolicyDBSet(t.Context(), credentials.AccessKey, policyName, regUser, false); err != nil {
+		t.Fatalf("%s: attach delete identity policy: %v", instanceType, err)
+	}
+	return credentials
 }
 
 func putAnonymousDeletePolicy(t *testing.T, instanceType, bucketName string, apiRouter http.Handler,
