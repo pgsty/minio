@@ -2637,7 +2637,8 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if s3Error := checkRequestAuthType(ctx, r, policy.DeleteObjectAction, bucket, object); s3Error != ErrNone {
+	versionID := strings.TrimSpace(r.Form.Get(xhttp.VersionID))
+	if s3Error := checkRequestAuthTypeWithVID(ctx, r, deleteObjectAction(versionID), bucket, object, versionID); s3Error != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}

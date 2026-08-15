@@ -499,7 +499,7 @@ func (api objectAPIHandlers) DeleteMultipleObjectsHandler(w http.ResponseWriter,
 	vc, _ := globalBucketVersioningSys.Get(bucket)
 	oss := make([]*objSweeper, len(deleteObjectsReq.Objects))
 	for index, object := range deleteObjectsReq.Objects {
-		if apiErrCode := checkRequestAuthTypeWithVID(ctx, r, policy.DeleteObjectAction, bucket, object.ObjectName, object.VersionID); apiErrCode != ErrNone {
+		if apiErrCode := checkRequestAuthTypeWithVID(ctx, r, deleteObjectAction(object.VersionID), bucket, object.ObjectName, object.VersionID); apiErrCode != ErrNone {
 			if apiErrCode == ErrSignatureDoesNotMatch || apiErrCode == ErrInvalidAccessKeyID {
 				writeErrorResponse(ctx, w, errorCodes.ToAPIErr(apiErrCode), r.URL)
 				return

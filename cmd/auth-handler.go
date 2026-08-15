@@ -374,6 +374,13 @@ func checkRequestAuthTypeWithVID(ctx context.Context, r *http.Request, action po
 	return s3Err
 }
 
+func deleteObjectAction(versionID string) policy.Action {
+	if versionID != "" {
+		return policy.DeleteObjectVersionAction
+	}
+	return policy.DeleteObjectAction
+}
+
 func authenticateRequest(ctx context.Context, r *http.Request, action policy.Action) (s3Err APIErrorCode) {
 	if logger.GetReqInfo(ctx) == nil {
 		bugLogIf(ctx, errors.New("unexpected context.Context does not have a logger.ReqInfo"), logger.ErrorKind)
@@ -457,7 +464,7 @@ func authorizeRequestWithTags(ctx context.Context, r *http.Request, action polic
 	versionID := reqInfo.VersionID
 	conditionValuesForAuth := func(locationConstraint string, credentials auth.Credentials) map[string][]string {
 		values := getConditionValuesWithTags(r, locationConstraint, credentials, existingTags, requestTags)
-		if action == policy.DeleteObjectAction {
+		if action == policy.DeleteObjectAction || action == policy.DeleteObjectVersionAction {
 			// DeleteObjects carries the effective version ID in each XML object,
 			// not in the request query. Keep authorization scoped to that entry.
 			if versionID == "" {
@@ -502,21 +509,6 @@ func authorizeRequestWithTags(ctx context.Context, r *http.Request, action polic
 		}
 
 		return ErrAccessDenied
-	}
-	if action == policy.DeleteObjectAction && versionID != "" {
-		if !globalIAMSys.IsAllowed(policy.Args{
-			AccountName:     cred.AccessKey,
-			Groups:          cred.Groups,
-			Action:          policy.Action(policy.DeleteObjectVersionAction),
-			BucketName:      bucket,
-			ConditionValues: conditionValuesForAuth("", cred),
-			ObjectName:      object,
-			IsOwner:         owner,
-			Claims:          cred.Claims,
-			DenyOnly:        true,
-		}) { // Request is not allowed if Deny action on DeleteObjectVersionAction
-			return ErrAccessDenied
-		}
 	}
 	if globalIAMSys.IsAllowed(policy.Args{
 		AccountName:     cred.AccessKey,
