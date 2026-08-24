@@ -1386,12 +1386,6 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		compressMetadata[ReservedMetadataPrefix+"actual-size"] = strconv.FormatInt(actualSize, 10)
 
 		reader = etag.NewReader(ctx, reader, nil, nil)
-		wantEncryption := crypto.Requested(r.Header)
-		s2c, cb := newS2CompressReader(reader, actualSize, wantEncryption)
-		dstOpts.IndexCB = cb
-		defer s2c.Close()
-		reader = etag.Wrap(s2c, reader)
-		length = -1
 	} else {
 		delete(srcInfo.UserDefined, ReservedMetadataPrefix+"compression")
 		delete(srcInfo.UserDefined, ReservedMetadataPrefix+"actual-size")
@@ -1539,6 +1533,23 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 				srcInfo.Reader.AddServerSideChecksumHasher(dstOpts.WantServerSideChecksumType)
 				dstOpts.WantChecksum = nil
 			}
+		}
+
+		if isDstCompressed {
+			checksumReader := srcInfo.Reader
+			wantEncryption := crypto.Requested(r.Header)
+			s2c, cb := newS2CompressReader(checksumReader, actualSize, wantEncryption)
+			dstOpts.IndexCB = cb
+			defer s2c.Close()
+			reader = etag.Wrap(s2c, checksumReader)
+			srcInfo.Reader, err = hash.NewReader(ctx, reader, -1, "", "", actualSize)
+			if err != nil {
+				writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+				return
+			}
+			// The storage reader consumes compressed data; checksums remain bound to plaintext.
+			pReader = NewPutObjReader(srcInfo.Reader)
+			pReader.setChecksumReader(checksumReader)
 		}
 
 		if isTargetEncrypted {

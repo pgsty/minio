@@ -1485,11 +1485,15 @@ func (er erasureObjects) putObject(ctx context.Context, bucket string, object st
 	// over opts.WantChecksum.
 	if opts.WantServerSideChecksumType.IsSet() {
 		serverSideChecksum := r.RawServerSideChecksumResult()
-		if serverSideChecksum != nil {
-			fi.Checksum = serverSideChecksum.AppendTo(nil, nil)
-			if opts.EncryptFn != nil {
-				fi.Checksum = opts.EncryptFn("object-checksum", fi.Checksum)
-			}
+		if serverSideChecksum == nil || !serverSideChecksum.Valid() ||
+			serverSideChecksum.Type.Base() != opts.WantServerSideChecksumType.Base() {
+			err := fmt.Errorf("internal error: server-side checksum missing, invalid, or mismatched after reading object, want %q", opts.WantServerSideChecksumType.String())
+			bugLogIf(ctx, err)
+			return ObjectInfo{}, toObjectErr(err, bucket, object)
+		}
+		fi.Checksum = serverSideChecksum.AppendTo(nil, nil)
+		if opts.EncryptFn != nil {
+			fi.Checksum = opts.EncryptFn("object-checksum", fi.Checksum)
 		}
 	} else if fi.Checksum == nil && opts.WantChecksum != nil {
 		// Trailing headers checksums should now be filled.

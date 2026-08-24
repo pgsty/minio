@@ -1134,11 +1134,11 @@ func (p *PutObjReader) contentChecksum() map[string]string {
 }
 
 // RawServerSideChecksumResult returns the ServerSideChecksumResult from the
-// underlying rawReader, since the PutObjReader might be encrypted data and
-// thus any checksum from that would be incorrect.
+// logical plaintext checksum reader, since the PutObjReader might contain
+// compressed or encrypted data and thus any checksum from that would be incorrect.
 func (p *PutObjReader) RawServerSideChecksumResult() *hash.Checksum {
-	if p.rawReader != nil {
-		return p.rawReader.ServerSideChecksumResult
+	if p.checksumReader != nil {
+		return p.checksumReader.ServerSideChecksumResult
 	}
 	return nil
 }
