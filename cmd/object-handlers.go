@@ -1810,7 +1810,7 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 
 	origETag := objInfo.ETag
 	objInfo.ETag = getDecryptedETag(r.Header, objInfo, false)
-	response := generateCopyObjectResponse(objInfo.ETag, objInfo.ModTime)
+	response := generateCopyObjectResponse(objInfo, r.Header)
 	encodedSuccessResponse := encodeResponse(response)
 
 	if dsc := mustReplicate(ctx, dstBucket, dstObject, objInfo.getMustReplicateOptions(replication.ObjectReplicationType, dstOpts)); dsc.ReplicateAny() {

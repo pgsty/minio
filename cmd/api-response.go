@@ -27,7 +27,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/minio/minio/internal/amztime"
 	"github.com/minio/minio/internal/crypto"
@@ -380,6 +379,13 @@ type CopyObjectResponse struct {
 	XMLName      xml.Name `xml:"http://s3.amazonaws.com/doc/2006-03-01/ CopyObjectResult" json:"-"`
 	LastModified string   // time string of format "2006-01-02T15:04:05.000Z"
 	ETag         string   // md5sum of the copied object.
+
+	ChecksumCRC32     string `xml:",omitempty"`
+	ChecksumCRC32C    string `xml:",omitempty"`
+	ChecksumSHA1      string `xml:",omitempty"`
+	ChecksumSHA256    string `xml:",omitempty"`
+	ChecksumCRC64NVME string `xml:",omitempty"`
+	ChecksumType      string `xml:",omitempty"`
 }
 
 // CopyObjectPartResponse container returns ETag and LastModified of the successfully copied object
@@ -769,11 +775,18 @@ func generateListObjectsV2Response(ctx context.Context, bucket, prefix, token, n
 
 type metaCheckFn = func(name string, action policy.Action) (s3Err APIErrorCode)
 
-// generates CopyObjectResponse from etag and lastModified time.
-func generateCopyObjectResponse(etag string, lastModified time.Time) CopyObjectResponse {
+// generates CopyObjectResponse from the committed object information.
+func generateCopyObjectResponse(oi ObjectInfo, h http.Header) CopyObjectResponse {
+	cs, _ := oi.decryptChecksums(0, h)
 	return CopyObjectResponse{
-		ETag:         "\"" + etag + "\"",
-		LastModified: amztime.ISO8601Format(lastModified.UTC()),
+		ETag:              "\"" + oi.ETag + "\"",
+		LastModified:      amztime.ISO8601Format(oi.ModTime.UTC()),
+		ChecksumCRC32:     cs[hash.ChecksumCRC32.String()],
+		ChecksumCRC32C:    cs[hash.ChecksumCRC32C.String()],
+		ChecksumSHA1:      cs[hash.ChecksumSHA1.String()],
+		ChecksumSHA256:    cs[hash.ChecksumSHA256.String()],
+		ChecksumCRC64NVME: cs[hash.ChecksumCRC64NVME.String()],
+		ChecksumType:      cs[xhttp.AmzChecksumType],
 	}
 }
 

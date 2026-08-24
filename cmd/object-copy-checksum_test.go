@@ -22,6 +22,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/xml"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -117,6 +118,33 @@ func assertCopyChecksum(t *testing.T, obj ObjectLayer, bucket, object string, ty
 	return oi
 }
 
+func assertCopyChecksumResponse(t *testing.T, rec *httptest.ResponseRecorder, typ hash.ChecksumType, data []byte) {
+	t.Helper()
+	var response CopyObjectResponse
+	if err := xml.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unable to decode CopyObjectResult: %v", err)
+	}
+	var got string
+	switch typ.Base() {
+	case hash.ChecksumCRC32:
+		got = response.ChecksumCRC32
+	case hash.ChecksumCRC32C:
+		got = response.ChecksumCRC32C
+	case hash.ChecksumSHA1:
+		got = response.ChecksumSHA1
+	case hash.ChecksumSHA256:
+		got = response.ChecksumSHA256
+	case hash.ChecksumCRC64NVME:
+		got = response.ChecksumCRC64NVME
+	}
+	if want := mustChecksum(t, typ, data); got != want {
+		t.Fatalf("CopyObjectResult %s checksum %q, want %q: %s", typ.String(), got, want, rec.Body.String())
+	}
+	if response.ChecksumType != xhttp.AmzChecksumTypeFullObject {
+		t.Fatalf("CopyObjectResult checksum type %q, want %q", response.ChecksumType, xhttp.AmzChecksumTypeFullObject)
+	}
+}
+
 // TestAPICopyObjectServerSideChecksum verifies that server-computed checksums
 // cover the logical object, never the compressed storage stream.
 func TestAPICopyObjectServerSideChecksum(t *testing.T) {
@@ -187,6 +215,7 @@ func testAPICopyObjectServerSideChecksum(obj ObjectLayer, instanceType, bucketNa
 			if rec.Code != http.StatusOK {
 				t.Fatalf("%s: CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 			}
+			assertCopyChecksumResponse(t, rec, tc.typ, data)
 
 			info := assertCopyChecksum(t, obj, bucketName, destination, tc.typ, data, tc.compressed, nil)
 			md5sum := md5.Sum(data)
@@ -280,6 +309,7 @@ func testAPICopyObjectServerSideChecksumEncryption(obj ObjectLayer, instanceType
 				if rec.Code != http.StatusOK {
 					t.Fatalf("%s: SSE-S3 CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 				}
+				assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, data)
 				assertCopyChecksum(t, obj, bucketName, destination, hash.ChecksumCRC32, data, variant.compressed, nil)
 				if got := readCopyChecksumObject(t, obj, bucketName, destination, ObjectOptions{}); !bytes.Equal(got, data) {
 					t.Fatalf("%s: SSE-S3 round-trip body differs", instanceType)
@@ -296,6 +326,7 @@ func testAPICopyObjectServerSideChecksumEncryption(obj ObjectLayer, instanceType
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: SSE-S3 source CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 		}
+		assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, data)
 		assertCopyChecksum(t, obj, bucketName, destination, hash.ChecksumCRC32, data, true, nil)
 		if got := readCopyChecksumObject(t, obj, bucketName, destination, ObjectOptions{}); !bytes.Equal(got, data) {
 			t.Fatalf("%s: SSE-S3 source round-trip body differs", instanceType)
@@ -340,6 +371,7 @@ func testAPICopyObjectServerSideChecksumEncryption(obj ObjectLayer, instanceType
 				if rec.Code != http.StatusOK {
 					t.Fatalf("%s: SSE-C CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 				}
+				assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, data)
 				assertCopyChecksum(t, obj, bucketName, destination, hash.ChecksumCRC32, data, variant.compressed, decryptHeaders)
 
 				req, err := newTestSignedRequestV4(http.MethodGet, getGetObjectURL("", bucketName, destination),
@@ -390,6 +422,7 @@ func testAPICopyObjectServerSideChecksumSourceVariants(obj ObjectLayer, instance
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 		}
+		assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, data)
 		assertCopyChecksum(t, obj, bucketName, destination, hash.ChecksumCRC32, data, true, nil)
 
 		rec = copyChecksumRequest(t, apiRouter, credentials, bucketName, source, source, map[string]string{
@@ -399,6 +432,7 @@ func testAPICopyObjectServerSideChecksumSourceVariants(obj ObjectLayer, instance
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: in-place CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 		}
+		assertCopyChecksumResponse(t, rec, hash.ChecksumSHA256, data)
 		assertCopyChecksum(t, obj, bucketName, source, hash.ChecksumSHA256, data, true, nil)
 		if got := readCopyChecksumObject(t, obj, bucketName, source, ObjectOptions{}); !bytes.Equal(got, data) {
 			t.Fatalf("%s: in-place CopyObject body differs", instanceType)
@@ -415,6 +449,7 @@ func testAPICopyObjectServerSideChecksumSourceVariants(obj ObjectLayer, instance
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 		}
+		assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, data)
 		assertCopyChecksum(t, obj, bucketName, destination, hash.ChecksumCRC32, data, true, nil)
 	})
 
@@ -447,6 +482,7 @@ func testAPICopyObjectServerSideChecksumSourceVariants(obj ObjectLayer, instance
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 		}
+		assertCopyChecksumResponse(t, rec, typ, full)
 		assertCopyChecksum(t, obj, bucketName, destination, typ, full, true, nil)
 		if got := readCopyChecksumObject(t, obj, bucketName, destination, ObjectOptions{}); !bytes.Equal(got, full) {
 			t.Fatalf("%s: multipart source round-trip body differs", instanceType)
@@ -475,6 +511,7 @@ func testAPICopyObjectServerSideChecksumSourceVariants(obj ObjectLayer, instance
 			if rec.Code != http.StatusOK {
 				t.Fatalf("%s: CopyObject failed: %d %s", instanceType, rec.Code, rec.Body.String())
 			}
+			assertCopyChecksumResponse(t, rec, hash.ChecksumCRC32, boundary.data)
 			assertCopyChecksum(t, obj, bucketName, destination, hash.ChecksumCRC32, boundary.data, boundary.compressed, nil)
 		})
 	}
