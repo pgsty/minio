@@ -1357,6 +1357,15 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	} // no changes in storage-class expected so its a metadataonly operation.
 
 	var reader io.Reader = gr
+	sourceCompressMetadata := make(map[string]string, 2)
+	for _, key := range []string{
+		ReservedMetadataPrefix + "compression",
+		ReservedMetadataPrefix + "actual-size",
+	} {
+		if value, ok := srcInfo.UserDefined[key]; ok {
+			sourceCompressMetadata[key] = value
+		}
+	}
 
 	// Set the actual size to the compressed/decrypted size if encrypted.
 	actualSize, err := srcInfo.GetActualSize()
@@ -1387,8 +1396,6 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 
 		reader = etag.NewReader(ctx, reader, nil, nil)
 	} else {
-		delete(srcInfo.UserDefined, ReservedMetadataPrefix+"compression")
-		delete(srcInfo.UserDefined, ReservedMetadataPrefix+"actual-size")
 		reader = gr
 	}
 
@@ -1687,8 +1694,17 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		srcInfo.UserDefined[ReservedMetadataPrefixLower+ReplicationStatus] = dsc.PendingStatus()
 		srcInfo.UserDefined[ReservedMetadataPrefixLower+ReplicationTimestamp] = UTCNow().Format(time.RFC3339Nano)
 	}
-	// Store the preserved compression metadata.
-	maps.Copy(srcInfo.UserDefined, compressMetadata)
+	// Compression metadata must describe data that is actually rewritten.
+	if !srcInfo.metadataOnly || srcInfo.Legacy || dstOpts.WantServerSideChecksumType.IsSet() {
+		if isDstCompressed {
+			maps.Copy(srcInfo.UserDefined, compressMetadata)
+		} else {
+			delete(srcInfo.UserDefined, ReservedMetadataPrefix+"compression")
+			delete(srcInfo.UserDefined, ReservedMetadataPrefix+"actual-size")
+		}
+	} else {
+		maps.Copy(srcInfo.UserDefined, sourceCompressMetadata)
+	}
 
 	// We need to preserve the encryption headers set in EncryptRequest,
 	// so we do not want to override them, copy them instead.
@@ -1778,9 +1794,14 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 
 		copyObjectFn := objectAPI.CopyObject
 
+		copySrcOpts := srcOpts
+		if srcInfo.metadataOnly && dstOpts.Versioned && copySrcOpts.VersionID == "" {
+			copySrcOpts.VersionID = srcInfo.VersionID
+		}
+
 		// Copy source object to destination, if source and destination
 		// object is same then only metadata is updated.
-		objInfo, err = copyObjectFn(ctx, srcBucket, srcObject, dstBucket, dstObject, srcInfo, srcOpts, dstOpts)
+		objInfo, err = copyObjectFn(ctx, srcBucket, srcObject, dstBucket, dstObject, srcInfo, copySrcOpts, dstOpts)
 		if err != nil {
 			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 			return
