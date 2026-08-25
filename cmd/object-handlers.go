@@ -1122,6 +1122,12 @@ func getRemoteInstanceTransport() http.RoundTripper {
 	return nil
 }
 
+// federatedInternalAppName is the minio-go application token that
+// getRemoteInstanceClient attaches to every legacy federation proxy request. It
+// is declared next to its only producer so that the literal keeps its historical
+// file attribution in the rebrand compatibility baseline.
+const federatedInternalAppName = "minio-federated"
+
 // Returns a minio-go Client configured to access remote host described by destDNSRecord
 // Applicable only in a federated deployment
 var getRemoteInstanceClient = func(r *http.Request, host string) (*miniogo.Core, error) {
@@ -1136,7 +1142,7 @@ var getRemoteInstanceClient = func(r *http.Request, host string) (*miniogo.Core,
 	if err != nil {
 		return nil, err
 	}
-	core.SetAppInfo("minio-federated", ReleaseTag)
+	core.SetAppInfo(federatedInternalAppName, ReleaseTag)
 	return core, nil
 }
 

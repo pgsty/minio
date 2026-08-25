@@ -55,6 +55,46 @@ import (
 
 // Multipart objectAPIHandlers
 
+// isFederatedInternalRequest reports whether User-Agent carries the minio-go
+// application token attached by getRemoteInstanceClient.
+//
+// This is only a response-shape hint. User-Agent is not authenticated and must
+// never gate authorization, object visibility, or request validation. It is
+// safe here because the only effect is returning the checksum of the body the
+// caller was already authorized to upload.
+func isFederatedInternalRequest(userAgent string) bool {
+	for _, product := range strings.Fields(userAgent) {
+		name, version, ok := strings.Cut(product, "/")
+		if ok && name == federatedInternalAppName && version != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// partChecksumMap returns the non-empty part checksums in the form expected by
+// hash.AddChecksumHeader. x-amz-checksum-type is deliberately excluded because
+// UploadPart does not return it and minio-go cannot carry it in ObjectPart.
+func partChecksumMap(partInfo PartInfo) map[string]string {
+	checksums := make(map[string]string, 1)
+	if partInfo.ChecksumCRC32 != "" {
+		checksums[hash.ChecksumCRC32.String()] = partInfo.ChecksumCRC32
+	}
+	if partInfo.ChecksumCRC32C != "" {
+		checksums[hash.ChecksumCRC32C.String()] = partInfo.ChecksumCRC32C
+	}
+	if partInfo.ChecksumSHA1 != "" {
+		checksums[hash.ChecksumSHA1.String()] = partInfo.ChecksumSHA1
+	}
+	if partInfo.ChecksumSHA256 != "" {
+		checksums[hash.ChecksumSHA256.String()] = partInfo.ChecksumSHA256
+	}
+	if partInfo.ChecksumCRC64NVME != "" {
+		checksums[hash.ChecksumCRC64NVME.String()] = partInfo.ChecksumCRC64NVME
+	}
+	return checksums
+}
+
 // multipartChecksumType returns the base checksum type recorded when a
 // multipart upload was created. The boolean reports whether an algorithm was
 // recorded at all.
@@ -996,6 +1036,13 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 	// Therefore, we have to set the ETag directly as map entry.
 	w.Header()[xhttp.ETag] = []string{"\"" + etag + "\""}
 	hash.TransferChecksumHeader(w, r)
+	if isFederatedInternalRequest(r.UserAgent()) {
+		// Legacy federation proxies UploadPartCopy through minio-go
+		// Core.PutObjectPart, which can only recover checksums from response
+		// headers. Use the PartInfo returned by this exact write so the ETag and
+		// checksum cannot be mixed with a concurrent overwrite.
+		hash.AddChecksumHeader(w, partChecksumMap(partInfo))
+	}
 
 	writeSuccessResponseHeadersOnly(w)
 }
