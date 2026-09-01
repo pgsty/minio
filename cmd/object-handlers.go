@@ -2491,12 +2491,6 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 			sha256hex = getContentSha256Cksum(r, serviceS3)
 		}
 	}
-	entryRequestBase := r.Clone(ctx)
-	// The streaming reader fills r.Trailer while untar writes small entries in
-	// parallel. Entry authorization never consumes trailers, so keep them out
-	// of the immutable request template cloned by those goroutines.
-	entryRequestBase.Trailer = nil
-
 	hreader, err := hash.NewReader(ctx, reader, size, md5hex, sha256hex, size)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
@@ -2517,6 +2511,12 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 	sseConfig.Apply(r.Header, sse.ApplyOptions{
 		AutoEncrypt: globalAutoEncryption,
 	})
+	entryRequestBase := r.Clone(ctx)
+	// The streaming reader fills r.Trailer while untar writes small entries in
+	// parallel. Entry authorization never consumes trailers, so keep them out
+	// of the immutable request template cloned by those goroutines. Snapshot
+	// after applying bucket defaults so extracted objects retain encryption.
+	entryRequestBase.Trailer = nil
 	rawReplica := hasReplicaStatus(r.Header)
 	markerExact := hasReplicationMarker(r.Header)
 	trustedRequestCtx := withReplicationTrust(ctx, true, rawReplica)
@@ -2551,6 +2551,7 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 	setTarS3Err := func(code APIErrorCode) {
 		tarS3Err.CompareAndSwap(int32(ErrNone), int32(code))
 	}
+	ignoreEntryErrors := opts.ignoreErrs
 
 	putObjectTar := func(reader io.Reader, info os.FileInfo, object string) error {
 		size := info.Size()
@@ -2677,7 +2678,9 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		}
 
 		if s3err != ErrNone {
-			setTarS3Err(s3err)
+			if !ignoreEntryErrors {
+				setTarS3Err(s3err)
+			}
 			return ObjectLocked{}
 		}
 

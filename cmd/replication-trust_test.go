@@ -28,7 +28,9 @@ import (
 
 	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio/internal/auth"
+	"github.com/minio/minio/internal/crypto"
 	xhttp "github.com/minio/minio/internal/http"
+	"github.com/minio/minio/internal/kms"
 	"github.com/minio/pkg/v3/policy"
 )
 
@@ -376,6 +378,63 @@ func testAPISnowballReplicationTrustIsPerEntry(obj ObjectLayer, instanceType, bu
 				}
 			}
 		})
+	}
+}
+
+func TestAPISnowballInheritsBucketEncryption(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testAPISnowballInheritsBucketEncryption,
+	})
+}
+
+func testAPISnowballInheritsBucketEncryption(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	previousKMS := GlobalKMS
+	GlobalKMS = kms.NewStub("snowball-default-encryption")
+	defer func() { GlobalKMS = previousKMS }()
+	sseXML := []byte(`<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`)
+	if _, err := globalBucketMetadataSys.Update(t.Context(), bucketName, bucketSSEConfig, sseXML); err != nil {
+		t.Fatalf("%s: configure bucket encryption: %v", instanceType, err)
+	}
+
+	var body bytes.Buffer
+	tw := tar.NewWriter(&body)
+	objects := []string{"encrypted/one", "encrypted/two"}
+	for _, object := range objects {
+		data := []byte("snowball bucket encryption " + object)
+		if err := tw.WriteHeader(&tar.Header{Name: object, Mode: 0o600, Size: int64(len(data))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := newTestSignedRequestV4(http.MethodPut, getPutObjectURL("", bucketName, "encrypted-snowball.tar"),
+		int64(body.Len()), bytes.NewReader(body.Bytes()), credentials.AccessKey, credentials.SecretKey,
+		map[string]string{xhttp.AmzSnowballExtract: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: Snowball PUT status %d: %s", instanceType, rec.Code, rec.Body.String())
+	}
+	for _, object := range objects {
+		info, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+		if err != nil {
+			t.Fatalf("%s: get %s: %v", instanceType, object, err)
+		}
+		if _, encrypted := crypto.IsEncrypted(info.UserDefined); !encrypted {
+			t.Errorf("%s: extracted entry %s did not inherit bucket encryption", instanceType, object)
+		}
 	}
 }
 
