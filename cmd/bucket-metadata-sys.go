@@ -114,7 +114,7 @@ func (sys *BucketMetadataSys) Set(bucket string, meta BucketMetadata) {
 	}
 }
 
-func (sys *BucketMetadataSys) updateAndParse(ctx context.Context, bucket string, configFile string, configData []byte, parse bool) (updatedAt time.Time, err error) {
+func (sys *BucketMetadataSys) updateAndParse(ctx context.Context, bucket string, configFile string, configData []byte, parse, lifecycleDelete bool) (updatedAt time.Time, err error) {
 	objAPI := newObjectLayerFn()
 	if objAPI == nil {
 		return updatedAt, errServerNotInitialized
@@ -136,6 +136,12 @@ func (sys *BucketMetadataSys) updateAndParse(ctx context.Context, bucket string,
 				// Only single drive mode needs this fallback.
 				meta = newBucketMetadata(bucket)
 			} else {
+				return err
+			}
+		}
+		if lifecycleDelete {
+			configData, err = lifecycleDeleteConfig(meta.LifecycleConfigXML)
+			if err != nil {
 				return err
 			}
 		}
@@ -227,53 +233,50 @@ func lockBucketMetadata(ctx context.Context, objectAPI ObjectLayer, bucket strin
 	if err != nil {
 		return nil, nil, err
 	}
-	return lkctx.Context(), func() { lock.Unlock(lkctx) }, nil
+	ctx = context.WithValue(lkctx.Context(), bucketMetadataLockContextKey{}, bucket)
+	return ctx, func() { lock.Unlock(lkctx) }, nil
+}
+
+type bucketMetadataLockContextKey struct{}
+
+func bucketMetadataLockHeld(ctx context.Context, bucket string) bool {
+	lockedBucket, _ := ctx.Value(bucketMetadataLockContextKey{}).(string)
+	return lockedBucket == bucket
 }
 
 // Delete delete the bucket metadata for the specified bucket.
 // must be used by all callers instead of using Update() with nil configData.
 func (sys *BucketMetadataSys) Delete(ctx context.Context, bucket string, configFile string) (updatedAt time.Time, err error) {
-	if configFile == bucketLifecycleConfig {
-		// Get bucket config from current site
-		meta, e := globalBucketMetadataSys.GetConfigFromDisk(ctx, bucket)
-		if e != nil && !errors.Is(e, errConfigNotFound) {
-			return updatedAt, e
-		}
-		var expiryRuleRemoved bool
-		if len(meta.LifecycleConfigXML) > 0 {
-			var lcCfg lifecycle.Lifecycle
-			if err := xml.Unmarshal(meta.LifecycleConfigXML, &lcCfg); err != nil {
-				return updatedAt, err
-			}
-			// find a single expiry rule set the flag
-			for _, rl := range lcCfg.Rules {
-				if !rl.Expiration.IsNull() || !rl.NoncurrentVersionExpiration.IsNull() {
-					expiryRuleRemoved = true
-					break
-				}
-			}
-		}
+	return sys.updateAndParse(ctx, bucket, configFile, nil, false, configFile == bucketLifecycleConfig)
+}
 
-		// Form empty ILM details with `ExpiryUpdatedAt` field and save
-		var cfgData []byte
-		if expiryRuleRemoved {
-			var lcCfg lifecycle.Lifecycle
-			currtime := time.Now()
-			lcCfg.ExpiryUpdatedAt = &currtime
-			cfgData, err = xml.Marshal(lcCfg)
-			if err != nil {
-				return updatedAt, err
+func lifecycleDeleteConfig(current []byte) ([]byte, error) {
+	var expiryRuleRemoved bool
+	if len(current) > 0 {
+		var lcCfg lifecycle.Lifecycle
+		if err := xml.Unmarshal(current, &lcCfg); err != nil {
+			return nil, err
+		}
+		for _, rl := range lcCfg.Rules {
+			if !rl.Expiration.IsNull() || !rl.NoncurrentVersionExpiration.IsNull() {
+				expiryRuleRemoved = true
+				break
 			}
 		}
-		return sys.updateAndParse(ctx, bucket, configFile, cfgData, false)
 	}
-	return sys.updateAndParse(ctx, bucket, configFile, nil, false)
+	if !expiryRuleRemoved {
+		return nil, nil
+	}
+	var lcCfg lifecycle.Lifecycle
+	currtime := time.Now()
+	lcCfg.ExpiryUpdatedAt = &currtime
+	return xml.Marshal(lcCfg)
 }
 
 // Update update bucket metadata for the specified bucket.
 // The configData data should not be modified after being sent here.
 func (sys *BucketMetadataSys) Update(ctx context.Context, bucket string, configFile string, configData []byte) (updatedAt time.Time, err error) {
-	return sys.updateAndParse(ctx, bucket, configFile, configData, true)
+	return sys.updateAndParse(ctx, bucket, configFile, configData, true, false)
 }
 
 // Get metadata for a bucket.

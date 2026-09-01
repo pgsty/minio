@@ -249,6 +249,9 @@ func loadBucketMetadataParse(ctx context.Context, objectAPI ObjectLayer, bucket 
 		}
 
 		if len(configs) > 0 {
+			if !bucketMetadataLockHeld(ctx, bucket) {
+				return loadBucketMetadataParseUnderLock(ctx, objectAPI, bucket, parse)
+			}
 			// Old bucket without bucket metadata. Hence we migrate existing settings.
 			if err = b.convertLegacyConfigs(ctx, objectAPI, configs); err != nil {
 				return b, err
@@ -270,11 +273,23 @@ func loadBucketMetadataParse(ctx context.Context, objectAPI ObjectLayer, bucket 
 	}
 
 	// migrate unencrypted remote targets
+	if len(b.BucketTargetsConfigJSON) != 0 && GlobalKMS != nil && len(b.BucketTargetsConfigMetaJSON) == 0 && !bucketMetadataLockHeld(ctx, bucket) {
+		return loadBucketMetadataParseUnderLock(ctx, objectAPI, bucket, parse)
+	}
 	if err = b.migrateTargetConfig(ctx, objectAPI); err != nil {
 		return b, err
 	}
 
 	return b, nil
+}
+
+func loadBucketMetadataParseUnderLock(ctx context.Context, objectAPI ObjectLayer, bucket string, parse bool) (BucketMetadata, error) {
+	ctx, unlock, err := lockBucketMetadata(ctx, objectAPI, bucket)
+	if err != nil {
+		return newBucketMetadata(bucket), err
+	}
+	defer unlock()
+	return loadBucketMetadataParse(ctx, objectAPI, bucket, parse)
 }
 
 // loadBucketMetadata loads and migrates to bucket metadata.

@@ -156,6 +156,25 @@ func testMakeBucketForceCreatePreservesMetadata(obj ObjectLayer, instanceType, b
 	}
 }
 
+func TestApplyImportedBucketMetadataPreservesUnspecifiedFields(t *testing.T) {
+	policyJSON := []byte(`{"Version":"2012-10-17","Statement":[]}`)
+	tagXML := []byte(`<Tagging><TagSet><Tag><Key>existing</Key><Value>tag</Value></Tag></TagSet></Tagging>`)
+	src := newBucketMetadata("bucket")
+	src.PolicyConfigJSON = policyJSON
+	src.PolicyConfigUpdatedAt = UTCNow()
+	dst := newBucketMetadata("bucket")
+	dst.TaggingConfigXML = bytes.Clone(tagXML)
+
+	applyImportedBucketMetadata(&dst, src, importMetadataFields{bucketPolicyConfig: {}})
+	if !bytes.Equal(dst.PolicyConfigJSON, policyJSON) || !bytes.Equal(dst.TaggingConfigXML, tagXML) {
+		t.Fatalf("import patch overwrote unspecified metadata: %+v", dst)
+	}
+	src.PolicyConfigJSON[0] = '!'
+	if dst.PolicyConfigJSON[0] == '!' {
+		t.Fatal("import patch retained the source byte slice")
+	}
+}
+
 func testBucketMetadataLockPreservesTaggingAndSSE(obj ObjectLayer, instanceType, bucket string,
 	_ http.Handler, _ auth.Credentials, t *testing.T,
 ) {

@@ -589,6 +589,43 @@ type importMetaReport struct {
 	madmin.BucketMetaImportErrs
 }
 
+type importMetadataFields map[string]struct{}
+
+func (f importMetadataFields) add(configFile string) {
+	f[configFile] = struct{}{}
+}
+
+func applyImportedBucketMetadata(dst *BucketMetadata, src BucketMetadata, fields importMetadataFields) {
+	for configFile := range fields {
+		switch configFile {
+		case bucketPolicyConfig:
+			dst.PolicyConfigJSON = bytes.Clone(src.PolicyConfigJSON)
+			dst.PolicyConfigUpdatedAt = src.PolicyConfigUpdatedAt
+		case bucketNotificationConfig:
+			dst.NotificationConfigXML = bytes.Clone(src.NotificationConfigXML)
+			dst.NotificationConfigUpdatedAt = src.NotificationConfigUpdatedAt
+		case bucketLifecycleConfig:
+			dst.LifecycleConfigXML = bytes.Clone(src.LifecycleConfigXML)
+			dst.LifecycleConfigUpdatedAt = src.LifecycleConfigUpdatedAt
+		case bucketSSEConfig:
+			dst.EncryptionConfigXML = bytes.Clone(src.EncryptionConfigXML)
+			dst.EncryptionConfigUpdatedAt = src.EncryptionConfigUpdatedAt
+		case bucketTaggingConfig:
+			dst.TaggingConfigXML = bytes.Clone(src.TaggingConfigXML)
+			dst.TaggingConfigUpdatedAt = src.TaggingConfigUpdatedAt
+		case bucketQuotaConfigFile:
+			dst.QuotaConfigJSON = bytes.Clone(src.QuotaConfigJSON)
+			dst.QuotaConfigUpdatedAt = src.QuotaConfigUpdatedAt
+		case objectLockConfig:
+			dst.ObjectLockConfigXML = bytes.Clone(src.ObjectLockConfigXML)
+			dst.ObjectLockConfigUpdatedAt = src.ObjectLockConfigUpdatedAt
+		case bucketVersioningConfig:
+			dst.VersioningConfigXML = bytes.Clone(src.VersioningConfigXML)
+			dst.VersioningConfigUpdatedAt = src.VersioningConfigUpdatedAt
+		}
+	}
+}
+
 func (i *importMetaReport) SetStatus(bucket, fname string, err error) {
 	st := i.Buckets[bucket]
 	var errMsg string
@@ -649,6 +686,16 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 	}
 
 	bucketMap := make(map[string]*BucketMetadata, len(zr.File))
+	importedFields := make(map[string]importMetadataFields, len(zr.File))
+	blockedBuckets := make(map[string]struct{})
+	markImported := func(bucket, configFile string) {
+		fields := importedFields[bucket]
+		if fields == nil {
+			fields = make(importMetadataFields)
+			importedFields[bucket] = fields
+		}
+		fields.add(configFile)
+	}
 
 	updatedAt := UTCNow()
 
@@ -664,6 +711,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 			bucketMap[bucket] = &meta
 		} else if err != errConfigNotFound {
 			rpt.SetStatus(bucket, "", err)
+			blockedBuckets[bucket] = struct{}{}
 		}
 	}
 
@@ -675,6 +723,9 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 			continue
 		}
 		bucket, fileName := slc[0], slc[1]
+		if _, blocked := blockedBuckets[bucket]; blocked {
+			continue
+		}
 		if fileName == objectLockConfig {
 			reader, err := file.Open()
 			if err != nil {
@@ -708,6 +759,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].ObjectLockConfigXML = configData
 			bucketMap[bucket].ObjectLockConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		}
 	}
@@ -720,6 +772,9 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 			continue
 		}
 		bucket, fileName := slc[0], slc[1]
+		if _, blocked := blockedBuckets[bucket]; blocked {
+			continue
+		}
 		if fileName == bucketVersioningConfig {
 			reader, err := file.Open()
 			if err != nil {
@@ -764,6 +819,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].VersioningConfigXML = configData
 			bucketMap[bucket].VersioningConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		}
 	}
@@ -781,6 +837,9 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 			continue
 		}
 		bucket, fileName := slc[0], slc[1]
+		if _, blocked := blockedBuckets[bucket]; blocked {
+			continue
+		}
 
 		// create bucket if it does not exist yet.
 		if _, ok := bucketMap[bucket]; !ok {
@@ -813,6 +872,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].NotificationConfigXML = configData
 			bucketMap[bucket].NotificationConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		case bucketPolicyConfig:
 			// Error out if Content-Length is beyond allowed size.
@@ -847,6 +907,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].PolicyConfigJSON = configData
 			bucketMap[bucket].PolicyConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		case bucketLifecycleConfig:
 			bucketLifecycle, err := lifecycle.ParseLifecycleConfig(io.LimitReader(reader, sz))
@@ -879,6 +940,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].LifecycleConfigXML = configData
 			bucketMap[bucket].LifecycleConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		case bucketSSEConfig:
 			// Parse bucket encryption xml
@@ -917,6 +979,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].EncryptionConfigXML = configData
 			bucketMap[bucket].EncryptionConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		case bucketTaggingConfig:
 			tags, err := tags.ParseBucketXML(io.LimitReader(reader, sz))
@@ -933,6 +996,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].TaggingConfigXML = configData
 			bucketMap[bucket].TaggingConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		case bucketQuotaConfigFile:
 			data, err := io.ReadAll(reader)
@@ -949,6 +1013,7 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 
 			bucketMap[bucket].QuotaConfigJSON = data
 			bucketMap[bucket].QuotaConfigUpdatedAt = updatedAt
+			markImported(bucket, fileName)
 			rpt.SetStatus(bucket, fileName, nil)
 		}
 	}
@@ -962,11 +1027,27 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 	}
 
 	for bucket, meta := range bucketMap {
-		err := globalBucketMetadataSys.save(ctx, *meta)
+		fields := importedFields[bucket]
+		if len(fields) == 0 {
+			continue
+		}
+		lockCtx, unlock, err := lockBucketMetadata(ctx, objectAPI, bucket)
 		if err != nil {
 			rpt.SetStatus(bucket, "", err)
 			continue
 		}
+		merged, err := loadBucketMetadataParse(lockCtx, objectAPI, bucket, true)
+		if err == nil {
+			applyImportedBucketMetadata(&merged, *meta, fields)
+			err = globalBucketMetadataSys.saveMetadata(lockCtx, objectAPI, merged)
+		}
+		unlock()
+		if err != nil {
+			rpt.SetStatus(bucket, "", err)
+			continue
+		}
+		*meta = merged
+		globalNotificationSys.LoadBucketMetadata(bgContext(ctx), bucket)
 		// Call site replication hook.
 		if err = globalSiteReplicationSys.BucketMetaHook(ctx, madmin.SRBucketMeta{
 			Bucket:           bucket,
