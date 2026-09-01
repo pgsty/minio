@@ -123,6 +123,7 @@ func (sys *BucketMetadataSys) updateAndParse(ctx context.Context, bucket string,
 	if isMinioMetaBucketName(bucket) {
 		return updatedAt, errInvalidArgument
 	}
+	notifyCtx := ctx
 	ctx, unlock, err := lockBucketMetadata(ctx, objAPI, bucket)
 	if err != nil {
 		return updatedAt, err
@@ -195,7 +196,7 @@ func (sys *BucketMetadataSys) updateAndParse(ctx context.Context, bucket string,
 	if err != nil {
 		return updatedAt, err
 	}
-	globalNotificationSys.LoadBucketMetadata(bgContext(ctx), bucket) // Do not use caller context here
+	globalNotificationSys.LoadBucketMetadata(bgContext(notifyCtx), bucket) // Do not use caller context here
 	return updatedAt, nil
 }
 
@@ -228,8 +229,12 @@ func (sys *BucketMetadataSys) saveMetadata(ctx context.Context, objAPI ObjectLay
 }
 
 func lockBucketMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string) (context.Context, func(), error) {
+	return lockBucketMetadataWithTimeout(ctx, objectAPI, bucket, globalOperationTimeout)
+}
+
+func lockBucketMetadataWithTimeout(ctx context.Context, objectAPI ObjectLayer, bucket string, timeout *dynamicTimeout) (context.Context, func(), error) {
 	lock := objectAPI.NewNSLock(minioMetaBucket, pathJoin(bucketMetaPrefix, bucket, "metadata.lock"))
-	lkctx, err := lock.GetLock(ctx, globalOperationTimeout)
+	lkctx, err := lock.GetLock(ctx, timeout)
 	if err != nil {
 		return nil, nil, err
 	}
