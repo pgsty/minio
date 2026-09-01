@@ -1018,14 +1018,23 @@ func testAPIDeleteMultipleObjectsVersionIDNullCondition(obj ObjectLayer, instanc
 
 	policyBytes := fmt.Appendf(nil, `{
 		"Version":"2012-10-17",
-		"Statement":[{
-			"Effect":"Allow",
-			"Principal":"*",
-			"Action":"s3:DeleteObject",
-			"Resource":"arn:aws:s3:::%s/*",
-			"Condition":{"Null":{"s3:versionid":"true"}}
-		}]
-	}`, bucketName)
+		"Statement":[
+			{
+				"Effect":"Allow",
+				"Principal":"*",
+				"Action":"s3:DeleteObject",
+				"Resource":"arn:aws:s3:::%s/*",
+				"Condition":{"Null":{"s3:versionid":"true"}}
+			},
+			{
+				"Effect":"Allow",
+				"Principal":"*",
+				"Action":"s3:DeleteObjectVersion",
+				"Resource":"arn:aws:s3:::%s/*",
+				"Condition":{"StringEquals":{"s3:versionid":"%s"}}
+			}
+		]
+	}`, bucketName, bucketName, versionIDs["with-version-id"])
 	policyReq, err := newTestSignedRequestV4(http.MethodPut, getPutPolicyURL("", bucketName), int64(len(policyBytes)),
 		bytes.NewReader(policyBytes), credentials.AccessKey, credentials.SecretKey, nil)
 	if err != nil {
@@ -1071,29 +1080,30 @@ func testAPIDeleteMultipleObjectsVersionIDNullCondition(obj ObjectLayer, instanc
 			t.Errorf("%s: %q was not a successful delete-marker creation: %+v", instanceType, objectName, response.DeletedObjects)
 		}
 	}
-	if len(deleted) != 2 {
+	if object, ok := deleted["with-version-id"]; !ok || object.VersionID != versionIDs["with-version-id"] {
+		t.Errorf("%s: matching explicit version was not deleted: %+v", instanceType, response.DeletedObjects)
+	}
+	if len(deleted) != 3 {
 		t.Errorf("%s: unexpected deleted objects: %+v", instanceType, response.DeletedObjects)
 	}
 	errorsByKey := make(map[string]DeleteError, len(response.Errors))
 	for _, deleteErr := range response.Errors {
 		errorsByKey[deleteErr.Key] = deleteErr
 	}
-	for objectName, versionID := range map[string]string{
-		"with-version-id":      versionIDs["with-version-id"],
-		"with-null-version-id": nullVersionID,
-	} {
+	for objectName, versionID := range map[string]string{"with-null-version-id": nullVersionID} {
 		deleteErr, ok := errorsByKey[objectName]
 		if !ok || deleteErr.VersionID != versionID || deleteErr.Code != errorCodes[ErrAccessDenied].Code {
 			t.Errorf("%s: %q did not return AccessDenied for version %q: %+v", instanceType, objectName, versionID, response.Errors)
 		}
 	}
-	if len(errorsByKey) != 2 {
+	if len(errorsByKey) != 1 {
 		t.Errorf("%s: unexpected delete errors: %+v", instanceType, response.Errors)
 	}
 
-	// A simple delete adds a marker and keeps the old version. The explicitly
-	// named version must also remain because its policy condition did not match.
-	for objectName, versionID := range versionIDs {
+	// A simple delete adds a marker and keeps the old version. The null-version
+	// delete remains denied because its per-entry condition does not match.
+	for _, objectName := range []string{"without-version-id-before", "without-version-id-after", "with-null-version-id"} {
+		versionID := versionIDs[objectName]
 		if _, err = obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{VersionID: versionID}); err != nil {
 			t.Errorf("%s: version %s of %q was not preserved: %v", instanceType, versionID, objectName, err)
 		}
@@ -1103,7 +1113,10 @@ func testAPIDeleteMultipleObjectsVersionIDNullCondition(obj ObjectLayer, instanc
 			t.Errorf("%s: simple delete of %q did not hide the latest object behind a delete marker: %v", instanceType, objectName, err)
 		}
 	}
-	for _, objectName := range []string{"with-version-id", "with-null-version-id"} {
+	if _, err = obj.GetObjectInfo(t.Context(), bucketName, "with-version-id", ObjectOptions{VersionID: versionIDs["with-version-id"]}); !isErrVersionNotFound(err) && !isErrObjectNotFound(err) {
+		t.Errorf("%s: matching explicit version still exists: %v", instanceType, err)
+	}
+	for _, objectName := range []string{"with-null-version-id"} {
 		if info, err := obj.GetObjectInfo(t.Context(), bucketName, objectName, ObjectOptions{}); err != nil {
 			t.Errorf("%s: denied version delete removed latest %q: %v", instanceType, objectName, err)
 		} else if info.VersionID != versionIDs[objectName] {

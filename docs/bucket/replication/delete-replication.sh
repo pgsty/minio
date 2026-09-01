@@ -88,11 +88,7 @@ echo "=== mysilo2"
 
 versionId="$(./mc ls --json --versions mysilo1/testbucket/dir/ | tail -n1 | jq -r .versionId)"
 
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-export AWS_REGION=us-east-1
-
-aws s3api --endpoint-url http://localhost:9001 delete-object --bucket testbucket --key dir/file --version-id "$versionId"
+./mc rm --version-id "$versionId" mysilo1/testbucket/dir/file
 
 ./mc ls -r --versions mysilo1/testbucket >/tmp/mysilo1.txt
 ./mc ls -r --versions mysilo2/testbucket >/tmp/mysilo2.txt
@@ -117,6 +113,76 @@ if [ $ret -ne 0 ]; then
 	exit 1
 fi
 
+# Verify the documented least-privilege target policy. Explicit version
+# deletion on the receiver is replication traffic, so the target credential
+# needs DeleteObject + ReplicateDelete but not DeleteObjectVersion.
+./mc mb mysilo1/leastpriv/ mysilo2/leastpriv/ --with-versioning
+./mc admin user add mysilo2 repluser repluser123
+cat >/tmp/xl/replpolicy.json <<'EOF'
+{
+ "Version": "2012-10-17",
+ "Statement": [
+  {
+   "Effect": "Allow",
+   "Action": [
+    "s3:GetReplicationConfiguration",
+    "s3:ListBucket",
+    "s3:ListBucketMultipartUploads",
+    "s3:GetBucketLocation",
+    "s3:GetBucketVersioning"
+   ],
+   "Resource": ["arn:aws:s3:::leastpriv"]
+  },
+  {
+   "Effect": "Allow",
+   "Action": [
+    "s3:GetReplicationConfiguration",
+    "s3:ReplicateTags",
+    "s3:AbortMultipartUpload",
+    "s3:GetObject",
+    "s3:GetObjectVersion",
+    "s3:GetObjectVersionTagging",
+    "s3:PutObject",
+    "s3:DeleteObject",
+    "s3:ReplicateObject",
+    "s3:ReplicateDelete"
+   ],
+   "Resource": ["arn:aws:s3:::leastpriv/*"]
+  }
+ ]
+}
+EOF
+./mc admin policy create mysilo2 replpolicy /tmp/xl/replpolicy.json
+./mc admin policy attach mysilo2 replpolicy --user repluser
+./mc replicate add mysilo1/leastpriv --remote-bucket http://repluser:repluser123@localhost:9002/leastpriv/ --priority 1 --replicate delete,delete-marker
+
+./mc cp README.md mysilo1/leastpriv/dir/file
+./mc cp README.md mysilo1/leastpriv/dir/file
+sleep 1s
+
+leastPrivVersionId="$(./mc ls --json --versions mysilo1/leastpriv/dir/ | tail -n1 | jq -r .versionId)"
+./mc rm --version-id "$leastPrivVersionId" mysilo1/leastpriv/dir/file
+sleep 1s
+./mc ls -r --versions mysilo1/leastpriv >/tmp/leastpriv1.txt
+./mc ls -r --versions mysilo2/leastpriv >/tmp/leastpriv2.txt
+out=$(diff -qpruN /tmp/leastpriv1.txt /tmp/leastpriv2.txt)
+ret=$?
+if [ $ret -ne 0 ]; then
+	echo "BUG: least-privilege version delete did not replicate: $out"
+	exit 1
+fi
+
+./mc rm mysilo1/leastpriv/dir/file
+sleep 1s
+./mc ls -r --versions mysilo1/leastpriv >/tmp/leastpriv1.txt
+./mc ls -r --versions mysilo2/leastpriv >/tmp/leastpriv2.txt
+out=$(diff -qpruN /tmp/leastpriv1.txt /tmp/leastpriv2.txt)
+ret=$?
+if [ $ret -ne 0 ]; then
+	echo "BUG: least-privilege delete marker did not replicate: $out"
+	exit 1
+fi
+
 # Test listing of non replicated permanent deletes
 
 set -x
@@ -129,7 +195,7 @@ versionId="$(./mc ls --json --versions mysilo1/foobucket/dir/ | jq -r .versionId
 
 kill ${pid2} && wait ${pid2} || true
 
-aws s3api --endpoint-url http://localhost:9001 delete-object --bucket foobucket --key dir/file --version-id "$versionId"
+./mc rm --version-id "$versionId" mysilo1/foobucket/dir/file
 
 out="$(./mc ls mysilo1/foobucket/dir/)"
 if [ "$out" != "" ]; then

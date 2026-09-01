@@ -363,17 +363,6 @@ func checkRequestAuthTypeWithRequestTags(ctx context.Context, r *http.Request, a
 	return authorizeRequestWithTags(ctx, r, action, "", requestTags)
 }
 
-// checkRequestAuthTypeWithVID is similar to checkRequestAuthType
-// passes versionID additionally.
-func checkRequestAuthTypeWithVID(ctx context.Context, r *http.Request, action policy.Action, bucketName, objectName, versionID string) (s3Err APIErrorCode) {
-	logger.GetReqInfo(ctx).BucketName = bucketName
-	logger.GetReqInfo(ctx).ObjectName = objectName
-	logger.GetReqInfo(ctx).VersionID = versionID
-
-	_, _, s3Err = checkRequestAuthTypeCredential(ctx, r, action)
-	return s3Err
-}
-
 func authenticateRequest(ctx context.Context, r *http.Request, action policy.Action) (s3Err APIErrorCode) {
 	if logger.GetReqInfo(ctx) == nil {
 		bugLogIf(ctx, errors.New("unexpected context.Context does not have a logger.ReqInfo"), logger.ErrorKind)
@@ -439,6 +428,23 @@ func authorizeRequest(ctx context.Context, r *http.Request, action policy.Action
 	return authorizeRequestWithExistingTags(ctx, r, action, "")
 }
 
+func deleteObjectAction(versionID string) policy.Action {
+	if versionID != "" {
+		return policy.DeleteObjectVersionAction
+	}
+	return policy.DeleteObjectAction
+}
+
+func actionUsesObjectVersion(action policy.Action) bool {
+	switch action {
+	case policy.DeleteObjectAction, policy.DeleteObjectVersionAction,
+		policy.ReplicateDeleteAction, policy.BypassGovernanceRetentionAction:
+		return true
+	default:
+		return false
+	}
+}
+
 func authorizeRequestWithExistingTags(ctx context.Context, r *http.Request, action policy.Action, existingTags string) (s3Err APIErrorCode) {
 	return authorizeRequestWithTags(ctx, r, action, existingTags, nil)
 }
@@ -457,7 +463,7 @@ func authorizeRequestWithTags(ctx context.Context, r *http.Request, action polic
 	versionID := reqInfo.VersionID
 	conditionValuesForAuth := func(locationConstraint string, credentials auth.Credentials) map[string][]string {
 		values := getConditionValuesWithTags(r, locationConstraint, credentials, existingTags, requestTags)
-		if action == policy.DeleteObjectAction {
+		if actionUsesObjectVersion(action) {
 			// DeleteObjects carries the effective version ID in each XML object,
 			// not in the request query. Keep authorization scoped to that entry.
 			if versionID == "" {
@@ -503,21 +509,6 @@ func authorizeRequestWithTags(ctx context.Context, r *http.Request, action polic
 
 		return ErrAccessDenied
 	}
-	if action == policy.DeleteObjectAction && versionID != "" {
-		if !globalIAMSys.IsAllowed(policy.Args{
-			AccountName:     cred.AccessKey,
-			Groups:          cred.Groups,
-			Action:          policy.Action(policy.DeleteObjectVersionAction),
-			BucketName:      bucket,
-			ConditionValues: conditionValuesForAuth("", cred),
-			ObjectName:      object,
-			IsOwner:         owner,
-			Claims:          cred.Claims,
-			DenyOnly:        true,
-		}) { // Request is not allowed if Deny action on DeleteObjectVersionAction
-			return ErrAccessDenied
-		}
-	}
 	if globalIAMSys.IsAllowed(policy.Args{
 		AccountName:     cred.AccessKey,
 		Groups:          cred.Groups,
@@ -551,6 +542,40 @@ func authorizeRequestWithTags(ctx context.Context, r *http.Request, action polic
 	}
 
 	return ErrAccessDenied
+}
+
+// authorizeReplicationDelete preserves the established target-credential
+// contract for trusted replication: DeleteObject and ReplicateDelete must be
+// allowed, while an explicit DeleteObjectVersion deny still blocks a named
+// version. Ordinary S3 requests never use this compatibility path.
+func authorizeReplicationDelete(ctx context.Context, r *http.Request) APIErrorCode {
+	if s3Err := authorizeRequest(ctx, r, policy.DeleteObjectAction); s3Err != ErrNone {
+		return s3Err
+	}
+	reqInfo := logger.GetReqInfo(ctx)
+	if reqInfo == nil {
+		return ErrAccessDenied
+	}
+	if reqInfo.VersionID == "" {
+		return ErrNone
+	}
+	cred := reqInfo.Cred
+	values := getConditionValuesWithTags(r, "", cred, "", nil)
+	values["versionid"] = []string{reqInfo.VersionID}
+	if !globalIAMSys.IsAllowed(policy.Args{
+		AccountName:     cred.AccessKey,
+		Groups:          cred.Groups,
+		Action:          policy.DeleteObjectVersionAction,
+		BucketName:      reqInfo.BucketName,
+		ConditionValues: values,
+		ObjectName:      reqInfo.ObjectName,
+		IsOwner:         reqInfo.Owner,
+		Claims:          cred.Claims,
+		DenyOnly:        true,
+	}) {
+		return ErrAccessDenied
+	}
+	return ErrNone
 }
 
 // Check request auth type verifies the incoming http request

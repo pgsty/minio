@@ -2821,7 +2821,14 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if s3Error := checkRequestAuthType(ctx, r, policy.DeleteObjectAction, bucket, object); s3Error != ErrNone {
+	reqInfo := logger.GetReqInfo(ctx)
+	if reqInfo == nil {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+		return
+	}
+	reqInfo.BucketName = bucket
+	reqInfo.ObjectName = object
+	if s3Error := authenticateRequest(ctx, r, policy.DeleteObjectAction); s3Error != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}
@@ -2835,12 +2842,22 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
 		return
 	}
+	trustedReplication := markerExact && replicationPermitted
+	var s3Error APIErrorCode
+	if trustedReplication {
+		s3Error = authorizeReplicationDelete(ctx, r)
+	} else {
+		s3Error = authorizeRequest(ctx, r, deleteObjectAction(reqInfo.VersionID))
+	}
+	if s3Error != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
+		return
+	}
 	if _, ok := r.Header[xhttp.MinIOSourceReplicationCheck]; ok {
 		// requests to just validate replication settings and permissions are not allowed to delete data
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrReplicationPermissionCheckError), r.URL)
 		return
 	}
-	trustedReplication := markerExact && replicationPermitted
 	replica := trustedReplication && rawReplica
 	if hasReplicationRequestHeaders(r.Header) {
 		ctx, r = applyReplicationTrust(ctx, r, trustedReplication, replica)
