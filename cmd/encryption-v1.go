@@ -1049,7 +1049,7 @@ func DecryptObjectInfo(info *ObjectInfo, r *http.Request) (encrypted bool, err e
 	if encrypted {
 		if crypto.SSEC.IsEncrypted(info.UserDefined) {
 			if !crypto.SSEC.IsRequested(headers) && !crypto.SSECopy.IsRequested(headers) {
-				if r.Header.Get(xhttp.MinIOSourceReplicationRequest) != "true" {
+				if !isReplicaTrusted(r.Context()) {
 					return encrypted, errEncryptedObject
 				}
 			}

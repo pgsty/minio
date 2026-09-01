@@ -25,8 +25,6 @@ import (
 
 	"github.com/minio/minio/internal/auth"
 	objectlock "github.com/minio/minio/internal/bucket/object/lock"
-	"github.com/minio/minio/internal/bucket/replication"
-	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/pkg/v3/policy"
 )
@@ -150,7 +148,11 @@ func enforceRetentionBypassForDelete(ctx context.Context, r *http.Request, bucke
 			}
 			// https://docs.aws.amazon.com/AmazonS3/latest/dev/object-lock-overview.html#object-lock-retention-modes
 			// If you try to delete objects protected by governance mode and have s3:BypassGovernanceRetention, the operation will succeed.
-			if checkRequestAuthType(ctx, r, policy.BypassGovernanceRetentionAction, bucket, object.ObjectName) != ErrNone {
+			if reqInfo := logger.GetReqInfo(ctx); reqInfo != nil {
+				reqInfo.BucketName = bucket
+				reqInfo.ObjectName = object.ObjectName
+			}
+			if authorizeRequest(ctx, r, policy.BypassGovernanceRetentionAction) != ErrNone {
 				return errAuthentication
 			}
 		}
@@ -242,7 +244,7 @@ func enforceRetentionBypassForPut(ctx context.Context, r *http.Request, oi Objec
 // For objects in "Compliance" mode, retention date cannot be shortened, and mode cannot be altered.
 // For objects with legal hold header set, the s3:PutObjectLegalHold permission is expected to be set
 // Both legal hold and retention can be applied independently on an object
-func checkPutObjectLockAllowed(ctx context.Context, rq *http.Request, bucket, object string, getObjectInfoFn GetObjectInfoFn, retentionPermErr, legalHoldPermErr APIErrorCode) (objectlock.RetMode, objectlock.RetentionDate, objectlock.ObjectLegalHold, APIErrorCode) {
+func checkPutObjectLockAllowed(ctx context.Context, rq *http.Request, bucket, object string, getObjectInfoFn GetObjectInfoFn, retentionPermErr, legalHoldPermErr APIErrorCode, replicaTrusted bool) (objectlock.RetMode, objectlock.RetentionDate, objectlock.ObjectLegalHold, APIErrorCode) {
 	var mode objectlock.RetMode
 	var retainDate objectlock.RetentionDate
 	var legalHold objectlock.ObjectLegalHold
@@ -269,9 +271,7 @@ func checkPutObjectLockAllowed(ctx context.Context, rq *http.Request, bucket, ob
 		return mode, retainDate, legalHold, toAPIErrorCode(ctx, err)
 	}
 
-	replica := rq.Header.Get(xhttp.AmzBucketReplicationStatus) == replication.Replica.String()
-
-	if opts.VersionID != "" && !replica {
+	if opts.VersionID != "" && !replicaTrusted {
 		if objInfo, err := getObjectInfoFn(ctx, bucket, object, opts); err == nil {
 			r := objectlock.GetObjectRetentionMeta(objInfo.UserDefined)
 			t, err := objectlock.UTCNowNTP()
@@ -307,8 +307,8 @@ func checkPutObjectLockAllowed(ctx context.Context, rq *http.Request, bucket, ob
 		if err != nil {
 			return mode, retainDate, legalHold, toAPIErrorCode(ctx, err)
 		}
-		rMode, rDate, err := objectlock.ParseObjectLockRetentionHeaders(rq.Header)
-		if err != nil && (!replica || rMode != "" || !rDate.IsZero()) {
+		rMode, rDate, err := objectlock.ParseObjectLockRetentionHeaders(rq.Header, replicaTrusted)
+		if err != nil && (!replicaTrusted || rMode != "" || !rDate.IsZero()) {
 			return mode, retainDate, legalHold, toAPIErrorCode(ctx, err)
 		}
 		if retentionPermErr != ErrNone {
@@ -316,7 +316,7 @@ func checkPutObjectLockAllowed(ctx context.Context, rq *http.Request, bucket, ob
 		}
 		return rMode, rDate, legalHold, ErrNone
 	}
-	if replica { // replica inherits retention metadata only from source
+	if replicaTrusted { // replica inherits retention metadata only from source
 		return "", objectlock.RetentionDate{}, legalHold, ErrNone
 	}
 	if !retentionRequested && retentionCfg.Validity > 0 {
