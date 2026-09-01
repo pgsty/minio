@@ -249,8 +249,17 @@ func loadBucketMetadataParse(ctx context.Context, objectAPI ObjectLayer, bucket 
 		}
 
 		if len(configs) > 0 {
-			// Old bucket without bucket metadata. Hence we migrate existing settings.
-			if err = b.convertLegacyConfigs(ctx, objectAPI, configs); err != nil {
+			if !bucketMetadataLockHeld(ctx, bucket) {
+				migrated, lockErr := loadBucketMetadataParseUnderLock(ctx, objectAPI, bucket, parse)
+				if lockErr == nil {
+					return migrated, nil
+				}
+				if !errors.Is(lockErr, errBucketMetadataMigrationLockUnavailable) {
+					return b, lockErr
+				}
+				internalLogOnceIf(ctx, fmt.Errorf("unable to persist bucket metadata migration for %s, using the legacy configuration in memory: %w", bucket, lockErr), "bucket-metadata-migration-lock-"+bucket)
+				b.applyLegacyConfigs(configs)
+			} else if err = b.convertLegacyConfigs(ctx, objectAPI, configs); err != nil {
 				return b, err
 			}
 		}
@@ -270,12 +279,37 @@ func loadBucketMetadataParse(ctx context.Context, objectAPI ObjectLayer, bucket 
 	}
 
 	// migrate unencrypted remote targets
+	if len(b.BucketTargetsConfigJSON) != 0 && GlobalKMS != nil && len(b.BucketTargetsConfigMetaJSON) == 0 && !bucketMetadataLockHeld(ctx, bucket) {
+		migrated, lockErr := loadBucketMetadataParseUnderLock(ctx, objectAPI, bucket, parse)
+		if lockErr == nil {
+			return migrated, nil
+		}
+		if !errors.Is(lockErr, errBucketMetadataMigrationLockUnavailable) {
+			return b, lockErr
+		}
+		internalLogOnceIf(ctx, fmt.Errorf("unable to persist encrypted bucket target metadata for %s, using the existing configuration in memory: %w", bucket, lockErr), "bucket-metadata-migration-lock-"+bucket)
+		return b, nil
+	}
 	if err = b.migrateTargetConfig(ctx, objectAPI); err != nil {
 		return b, err
 	}
 
 	return b, nil
 }
+
+func loadBucketMetadataParseUnderLock(ctx context.Context, objectAPI ObjectLayer, bucket string, parse bool) (BucketMetadata, error) {
+	ctx, unlock, err := lockBucketMetadataWithTimeout(ctx, objectAPI, bucket, bucketMetadataMigrationTimeout)
+	if err != nil {
+		return newBucketMetadata(bucket), fmt.Errorf("%w: %v", errBucketMetadataMigrationLockUnavailable, err)
+	}
+	defer unlock()
+	return loadBucketMetadataParse(ctx, objectAPI, bucket, parse)
+}
+
+var (
+	bucketMetadataMigrationTimeout            = newDynamicTimeout(5*time.Second, time.Second)
+	errBucketMetadataMigrationLockUnavailable = errors.New("bucket metadata migration lock unavailable")
+)
 
 // loadBucketMetadata loads and migrates to bucket metadata.
 func loadBucketMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string) (BucketMetadata, error) {
@@ -440,7 +474,7 @@ func (b *BucketMetadata) getAllLegacyConfigs(ctx context.Context, objectAPI Obje
 	return configs, nil
 }
 
-func (b *BucketMetadata) convertLegacyConfigs(ctx context.Context, objectAPI ObjectLayer, configs map[string][]byte) error {
+func (b *BucketMetadata) applyLegacyConfigs(configs map[string][]byte) {
 	for legacyFile, configData := range configs {
 		switch legacyFile {
 		case legacyBucketObjectLockEnabledConfigFile:
@@ -472,6 +506,10 @@ func (b *BucketMetadata) convertLegacyConfigs(ctx context.Context, objectAPI Obj
 		}
 	}
 	b.defaultTimestamps()
+}
+
+func (b *BucketMetadata) convertLegacyConfigs(ctx context.Context, objectAPI ObjectLayer, configs map[string][]byte) error {
+	b.applyLegacyConfigs(configs)
 
 	if err := b.Save(ctx, objectAPI); err != nil {
 		return err
