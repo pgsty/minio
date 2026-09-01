@@ -297,6 +297,13 @@ avoids a peer reload that needs migration from waiting on a lock held by the
 notifying node. Reordered cross-site delivery is handled by the total-order
 join.
 
+The lock name changes from `cors-config.lock` to `metadata.lock`. During a
+rolling upgrade, old and new nodes therefore do not serialize metadata writers
+with each other; the shared-lock guarantee begins only after every node in the
+cluster runs the new binary. Operators should avoid bucket-metadata changes
+during that window. The on-disk record is unchanged, so rollback remains
+format-compatible.
+
 ## Dispatch and Retry
 
 PUT sends a typed `SRBucketMetaTypeCorsConfig` event with canonical base64 XML
