@@ -11,6 +11,7 @@
 package cmd
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -21,11 +22,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio/internal/auth"
 	xhttp "github.com/minio/minio/internal/http"
+	"github.com/minio/pkg/v3/policy"
 )
 
 func TestAPIReplicationTrustProtectsSSECReads(t *testing.T) {
@@ -270,6 +274,153 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 			}
 		})
 	}
+}
+
+func TestAPISnowballReplicationTrustIsPerEntry(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testAPISnowballReplicationTrustIsPerEntry,
+	})
+}
+
+func testAPISnowballReplicationTrustIsPerEntry(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	const (
+		allowedPrefix = "snowball/allowed/"
+		deniedPrefix  = "snowball/denied/"
+		sourceETag    = "0123456789abcdef0123456789abcdef"
+	)
+	creds := newSnowballReplicationTrustUser(t, instanceType, bucketName, allowedPrefix)
+
+	var body bytes.Buffer
+	tw := tar.NewWriter(&body)
+	objects := make([]struct {
+		name    string
+		trusted bool
+	}, 0, 32)
+	for i := 0; i < 16; i++ {
+		for _, entry := range []struct {
+			prefix  string
+			trusted bool
+		}{
+			{prefix: allowedPrefix, trusted: true},
+			{prefix: deniedPrefix},
+		} {
+			name := entry.prefix + strconv.Itoa(i)
+			data := []byte("snowball replication trust " + name)
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data))}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(data); err != nil {
+				t.Fatal(err)
+			}
+			objects = append(objects, struct {
+				name    string
+				trusted bool
+			}{name: name, trusted: entry.trusted})
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	headers := map[string]string{
+		xhttp.AmzSnowballExtract:            "true",
+		xhttp.MinIOSourceReplicationRequest: "true",
+		xhttp.MinIOSourceETag:               sourceETag,
+	}
+	for _, test := range []struct {
+		name    string
+		trailer bool
+	}{
+		{name: "signed-v4"},
+		{name: "streaming-unsigned-trailer", trailer: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var req *http.Request
+			var err error
+			if test.trailer {
+				req, err = newStreamingUnsignedTrailerRequest(http.MethodPut,
+					getPutObjectURL("", bucketName, "snowball.tar"), body.Bytes(), UTCNow())
+				if err == nil {
+					for name, value := range headers {
+						req.Header.Set(name, value)
+					}
+					err = signRequestV4(req, creds.AccessKey, creds.SecretKey)
+				}
+			} else {
+				req, err = newTestSignedRequestV4(http.MethodPut, getPutObjectURL("", bucketName, "snowball.tar"),
+					int64(body.Len()), bytes.NewReader(body.Bytes()), creds.AccessKey, creds.SecretKey, headers)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			apiRouter.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s: Snowball PUT status %d: %s", instanceType, rec.Code, rec.Body.String())
+			}
+
+			for _, object := range objects {
+				info, err := obj.GetObjectInfo(t.Context(), bucketName, object.name, ObjectOptions{})
+				if err != nil {
+					t.Fatalf("%s: get %s: %v", instanceType, object.name, err)
+				}
+				if object.trusted && info.ETag != sourceETag {
+					t.Errorf("%s: trusted entry %s ETag = %q, want source ETag", instanceType, object.name, info.ETag)
+				}
+				if !object.trusted && info.ETag == sourceETag {
+					t.Errorf("%s: untrusted entry %s preserved source ETag", instanceType, object.name)
+				}
+			}
+		})
+	}
+}
+
+func newSnowballReplicationTrustUser(t *testing.T, instanceType, bucketName, allowedPrefix string) auth.Credentials {
+	t.Helper()
+	ctx := t.Context()
+	accessKey, secretKey, err := auth.GenerateCredentials()
+	if err != nil {
+		t.Fatalf("%s: generate credentials: %v", instanceType, err)
+	}
+	creds := auth.Credentials{AccessKey: accessKey, SecretKey: secretKey}
+	if _, err = globalIAMSys.CreateUser(ctx, creds.AccessKey, madmin.AddOrUpdateUserReq{
+		SecretKey: creds.SecretKey,
+		Status:    madmin.AccountEnabled,
+	}); err != nil {
+		t.Fatalf("%s: create Snowball user: %v", instanceType, err)
+	}
+
+	policyJSON := `{
+ "Version": "2012-10-17",
+ "Statement": [
+  {
+   "Effect": "Allow",
+   "Action": ["s3:PutObject"],
+   "Resource": ["arn:aws:s3:::` + bucketName + `/*"]
+  },
+  {
+   "Effect": "Allow",
+   "Action": ["s3:ReplicateObject"],
+   "Resource": ["arn:aws:s3:::` + bucketName + `/` + allowedPrefix + `*"]
+  }
+ ]
+}`
+	parsed, err := policy.ParseConfig(strings.NewReader(policyJSON))
+	if err != nil {
+		t.Fatalf("%s: parse Snowball policy: %v", instanceType, err)
+	}
+	policyName := "snowball-replication-trust-" + mustGetUUID()
+	if _, err = globalIAMSys.SetPolicy(ctx, policyName, *parsed); err != nil {
+		t.Fatalf("%s: install Snowball policy: %v", instanceType, err)
+	}
+	if _, err = globalIAMSys.PolicyDBSet(ctx, creds.AccessKey, policyName, regUser, false); err != nil {
+		t.Fatalf("%s: attach Snowball policy: %v", instanceType, err)
+	}
+	return creds
 }
 
 func TestAPICopyObjectMarkerOnlyDoesNotCopyCiphertext(t *testing.T) {

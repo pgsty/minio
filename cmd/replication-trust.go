@@ -106,11 +106,9 @@ func hasReplicationRequestHeaders(h http.Header) bool {
 }
 
 func cloneRequestWithoutReplicationHeaders(r *http.Request, ctx context.Context) *http.Request {
-	clone := new(http.Request)
-	*clone = *r
-	clone.Header = r.Header.Clone()
+	clone := r.Clone(ctx)
 	stripReplicationRequestHeaders(clone.Header)
-	return clone.WithContext(ctx)
+	return clone
 }
 
 // applyReplicationTrust binds the handler context to the effective request.

@@ -2491,6 +2491,11 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 			sha256hex = getContentSha256Cksum(r, serviceS3)
 		}
 	}
+	entryRequestBase := r.Clone(ctx)
+	// The streaming reader fills r.Trailer while untar writes small entries in
+	// parallel. Entry authorization never consumes trailers, so keep them out
+	// of the immutable request template cloned by those goroutines.
+	entryRequestBase.Trailer = nil
 
 	hreader, err := hash.NewReader(ctx, reader, size, md5hex, sha256hex, size)
 	if err != nil {
@@ -2515,9 +2520,9 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 	rawReplica := hasReplicaStatus(r.Header)
 	markerExact := hasReplicationMarker(r.Header)
 	trustedRequestCtx := withReplicationTrust(ctx, true, rawReplica)
-	trustedRequest := r.WithContext(trustedRequestCtx)
+	trustedRequest := entryRequestBase.WithContext(trustedRequestCtx)
 	cleanRequestCtx := withReplicationTrust(ctx, false, false)
-	cleanRequest := cloneRequestWithoutReplicationHeaders(r, cleanRequestCtx)
+	cleanRequest := cloneRequestWithoutReplicationHeaders(entryRequestBase, cleanRequestCtx)
 	trustedReqParams := extractReqParams(trustedRequest)
 	cleanReqParams := extractReqParams(cleanRequest)
 
@@ -2533,29 +2538,44 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 	if sc == "" {
 		sc = storageclass.STANDARD
 	}
+	reqInfo := logger.GetReqInfo(ctx)
+	if reqInfo == nil {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+		return
+	}
+	reqInfo.RLock()
+	tarCred := reqInfo.Cred
+	tarOwner := reqInfo.Owner
+	reqInfo.RUnlock()
+	var tarS3Err atomic.Int32
+	setTarS3Err := func(code APIErrorCode) {
+		tarS3Err.CompareAndSwap(int32(ErrNone), int32(code))
+	}
 
 	putObjectTar := func(reader io.Reader, info os.FileInfo, object string) error {
 		size := info.Size()
-		if s3Err = isPutActionAllowed(ctx, getRequestAuthType(r), bucket, object, r, policy.PutObjectAction); s3Err != ErrNone {
-			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
-			return errors.New(errorCodes.ToAPIErr(s3Err).Code)
+		entryAuthReq := entryRequestBase.Clone(ctx)
+		entryS3Err := isPutActionAllowedWithCred(bucket, object, entryAuthReq, policy.PutObjectAction, nil, tarCred, tarOwner)
+		if entryS3Err != ErrNone {
+			setTarS3Err(entryS3Err)
+			return errors.New(errorCodes.ToAPIErr(entryS3Err).Code)
 		}
 		replicationPermitted := false
-		if rawReplica || markerExact {
-			replicationPermitted = replicationPermissionAllowed(ctx, r, bucket, object, policy.ReplicateObjectAction)
+		if tarCred.AccessKey != "" && (rawReplica || markerExact) {
+			replicationPermitted = isPutActionAllowedWithCred(bucket, object, entryAuthReq, policy.ReplicateObjectAction, nil, tarCred, tarOwner) == ErrNone
 		}
 		if rawReplica && !replicationPermitted {
-			s3Err = ErrAccessDenied
-			return errors.New(errorCodes.ToAPIErr(s3Err).Code)
+			setTarS3Err(ErrAccessDenied)
+			return errors.New(errorCodes.ToAPIErr(ErrAccessDenied).Code)
 		}
 		entryTrusted := markerExact && replicationPermitted
 		replicaTrusted := entryTrusted && rawReplica
 		entryCtx := cleanRequestCtx
-		entryReq := cleanRequest
+		entryReq := cloneRequestWithoutReplicationHeaders(entryAuthReq, cleanRequestCtx)
 		reqParams := cleanReqParams
 		if entryTrusted {
 			entryCtx = trustedRequestCtx
-			entryReq = trustedRequest
+			entryReq = entryAuthReq.WithContext(trustedRequestCtx)
 			reqParams = trustedReqParams
 		}
 		metadata := map[string]string{
@@ -2592,7 +2612,7 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		pReader := NewPutObjReader(rawReader)
 
 		if replicaTrusted {
-			if err = extractReplicationMetadataFromMime(entryCtx, textproto.MIMEHeader(entryReq.Header), metadata); err != nil {
+			if err := extractReplicationMetadataFromMime(entryCtx, textproto.MIMEHeader(entryReq.Header), metadata); err != nil {
 				return err
 			}
 			metadata[xhttp.AmzBucketReplicationStatus] = replication.Replica.String()
@@ -2657,7 +2677,7 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		}
 
 		if s3err != ErrNone {
-			s3Err = s3err
+			setTarS3Err(s3err)
 			return ObjectLocked{}
 		}
 
@@ -2746,7 +2766,14 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		return nil
 	}
 
-	if err = untar(ctx, hreader, putObjectTar, opts); err != nil {
+	err = untar(ctx, hreader, putObjectTar, opts)
+	if code := APIErrorCode(tarS3Err.Load()); code != ErrNone {
+		s3Err = code
+		if err == nil {
+			err = errors.New(errorCodes.ToAPIErr(code).Code)
+		}
+	}
+	if err != nil {
 		apiErr := errorCodes.ToAPIErr(s3Err)
 		// If not set, convert or use BadRequest
 		if s3Err == ErrNone {
