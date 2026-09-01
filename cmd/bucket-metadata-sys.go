@@ -51,6 +51,14 @@ type BucketMetadataSys struct {
 	initialized bool
 	group       *singleflight.Group
 	metadataMap map[string]BucketMetadata
+	// loadFailed tracks real buckets whose metadata could not be loaded at
+	// startup (concurrentLoad) or during a refresh. Such buckets are NOT
+	// resident in metadataMap even though the subsystem is Initialized, so a
+	// plain map miss cannot distinguish "not a bucket" from "known bucket whose
+	// config we could not read". Callers that must fail closed for a real but
+	// unreadable bucket (e.g. per-bucket CORS) consult this set. It is bounded
+	// by the number of load failures and is empty in normal operation.
+	loadFailed map[string]struct{}
 }
 
 // Count returns number of bucket metadata map entries.
@@ -67,6 +75,7 @@ func (sys *BucketMetadataSys) Remove(buckets ...string) {
 	for _, bucket := range buckets {
 		sys.group.Forget(bucket)
 		delete(sys.metadataMap, bucket)
+		delete(sys.loadFailed, bucket)
 		globalBucketMonitor.DeleteBucket(bucket)
 	}
 	sys.Unlock()
@@ -84,6 +93,11 @@ func (sys *BucketMetadataSys) RemoveStaleBuckets(diskBuckets set.StringSet) {
 		delete(sys.metadataMap, bucket)
 		globalBucketMonitor.DeleteBucket(bucket)
 	}
+	for bucket := range sys.loadFailed {
+		if !diskBuckets.Contains(bucket) {
+			delete(sys.loadFailed, bucket)
+		}
+	}
 }
 
 // Set - sets a new metadata in-memory.
@@ -95,6 +109,7 @@ func (sys *BucketMetadataSys) Set(bucket string, meta BucketMetadata) {
 	if !isMinioMetaBucketName(bucket) {
 		sys.Lock()
 		sys.metadataMap[bucket] = meta
+		delete(sys.loadFailed, bucket)
 		sys.Unlock()
 	}
 }
@@ -379,6 +394,65 @@ func (sys *BucketMetadataSys) GetCorsConfig(bucket string) (*cors.Config, time.T
 	return meta.corsConfig, meta.CorsConfigUpdatedAt, nil
 }
 
+// GetResidentCorsConfig returns the CORS configuration for the given bucket
+// using only bucket metadata that is already resident in memory. Unlike
+// GetCorsConfig it never loads metadata from disk and never caches a new
+// entry.
+//
+// The per-request CORS middleware runs before authentication, for every
+// Origin-bearing request, using the validated first path segment as the bucket
+// name.
+// Routing that through GetCorsConfig (which loads and caches) let an
+// unauthenticated client grow metadataMap without bound and trigger an
+// erasure metadata probe for every distinct, attacker-controlled,
+// non-existent name it sent with an Origin header (e.g. /minio/... , /api/... ,
+// or random buckets). Every bucket that can carry a CORS document is made
+// resident when the document is written (Set) and when metadata is loaded at
+// startup (Init/concurrentLoad), so a resident-only read is complete for real
+// buckets while costing only an in-memory map lookup for everything else.
+//
+// While bucket metadata is still loading (not yet Initialized) a non-resident
+// bucket returns errBucketMetadataNotInitialized so the caller fails closed
+// rather than answering with the permissive global policy for a bucket whose
+// restrictive CORS document may simply not be loaded yet.
+func (sys *BucketMetadataSys) GetResidentCorsConfig(bucket string) (*cors.Config, time.Time, error) {
+	if isMinioMetaBucketName(bucket) {
+		// Preserve GetConfig's semantics for the internal namespace: this is
+		// not a real bucket, and returning a non-errConfigNotFound error makes
+		// the CORS middleware fail closed rather than answer for .minio.sys
+		// with the permissive global policy.
+		return nil, time.Time{}, errInvalidArgument
+	}
+	if isReservedOrInvalidBucket(bucket, true) {
+		return nil, time.Time{}, errConfigNotFound
+	}
+	sys.RLock()
+	meta, ok := sys.metadataMap[bucket]
+	_, failed := sys.loadFailed[bucket]
+	initialized := sys.initialized
+	sys.RUnlock()
+	if ok {
+		if meta.corsConfigErr != nil {
+			return nil, meta.CorsConfigUpdatedAt, meta.corsConfigErr
+		}
+		if meta.corsConfig == nil {
+			return nil, time.Time{}, errConfigNotFound
+		}
+		return meta.corsConfig, meta.CorsConfigUpdatedAt, nil
+	}
+	// Not resident. Two cases must not be conflated:
+	//   - metadata is still loading (!initialized), or this is a real bucket
+	//     whose metadata failed to load: we cannot rule out a restrictive CORS
+	//     config, so fail closed rather than answer with the global policy.
+	//   - a fully initialized subsystem with no record of the name: it is not a
+	//     bucket that can carry CORS, so fall back to the global policy without
+	//     loading or caching metadata for an arbitrary, client-supplied name.
+	if !initialized || failed {
+		return nil, time.Time{}, errBucketMetadataNotInitialized
+	}
+	return nil, time.Time{}, errConfigNotFound
+}
+
 // GetCorsConfigXML returns the raw stored CORS configuration XML for the
 // given bucket, preserving the document exactly as it was PUT (including
 // the S3 xmlns and any unmodeled elements).
@@ -576,8 +650,13 @@ func (sys *BucketMetadataSys) concurrentLoad(ctx context.Context, buckets []stri
 	sys.Lock()
 	for i, meta := range bucketMetas {
 		if errs[i] != nil {
+			// Real bucket whose metadata could not be loaded: record it so
+			// consumers that must fail closed (per-bucket CORS) can tell it
+			// apart from a name that is not a bucket at all.
+			sys.loadFailed[buckets[i]] = struct{}{}
 			continue
 		}
+		delete(sys.loadFailed, buckets[i])
 		sys.metadataMap[buckets[i]] = meta
 	}
 	sys.Unlock()
@@ -627,6 +706,9 @@ func (sys *BucketMetadataSys) refreshBucketsMetadataLoop(ctx context.Context) {
 				meta, err := loadBucketMetadata(ctx, sys.objAPI, bucket)
 				if err != nil {
 					internalLogIf(ctx, err, logger.WarningKind)
+					sys.Lock()
+					sys.loadFailed[bucket] = struct{}{}
+					sys.Unlock()
 					wait() // wait to proceed to next entry.
 					continue
 				}
@@ -637,6 +719,8 @@ func (sys *BucketMetadataSys) refreshBucketsMetadataLoop(ctx context.Context) {
 					updated = true
 					sys.metadataMap[bucket] = meta
 				}
+				// A successful (re)load clears any earlier load failure.
+				delete(sys.loadFailed, bucket)
 				sys.Unlock()
 
 				if updated {
@@ -684,6 +768,7 @@ func (sys *BucketMetadataSys) init(ctx context.Context, buckets []string) {
 func (sys *BucketMetadataSys) Reset() {
 	sys.Lock()
 	clear(sys.metadataMap)
+	clear(sys.loadFailed)
 	sys.Unlock()
 }
 
@@ -691,6 +776,7 @@ func (sys *BucketMetadataSys) Reset() {
 func NewBucketMetadataSys() *BucketMetadataSys {
 	return &BucketMetadataSys{
 		metadataMap: make(map[string]BucketMetadata),
+		loadFailed:  make(map[string]struct{}),
 		group:       &singleflight.Group{},
 	}
 }

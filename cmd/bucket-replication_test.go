@@ -20,6 +20,7 @@ package cmd
 import (
 	"fmt"
 	"net/http"
+	"path"
 	"testing"
 	"time"
 
@@ -285,5 +286,24 @@ func TestReplicationResyncwrapper(t *testing.T) {
 		if sync := test.rcfg.resync(test.info, test.dsc, test.tgtStatuses); sync.mustResync() != test.expectedSync {
 			t.Errorf("%s (%s): Replicationresync  got %t , want %t", fmt.Sprintf("Test%d - %s", i+1, time.Now().Format(http.TimeFormat)), test.name, sync.mustResync(), test.expectedSync)
 		}
+	}
+}
+
+func TestReplicationValidationObjectUsesRulePrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		rule replication.Rule
+		want string
+	}{
+		{name: "empty prefix", rule: replication.Rule{}, want: path.Join(minioReservedBucket, globalLocalNodeNameHex, "deleteme")},
+		{name: "filter prefix", rule: replication.Rule{Filter: replication.Filter{Prefix: "data/"}}, want: path.Join("data", minioReservedBucket, globalLocalNodeNameHex, "deleteme")},
+		{name: "and prefix", rule: replication.Rule{Filter: replication.Filter{And: replication.And{Prefix: "archive/"}}}, want: path.Join("archive", minioReservedBucket, globalLocalNodeNameHex, "deleteme")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := replicationValidationObject(test.rule); got != test.want {
+				t.Fatalf("replicationValidationObject() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }

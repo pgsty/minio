@@ -386,7 +386,7 @@ func TestParseObjectLockRetentionHeaders(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		_, _, err := ParseObjectLockRetentionHeaders(tt.header)
+		_, _, err := ParseObjectLockRetentionHeaders(tt.header, false)
 		//nolint:gocritic
 		if tt.expectedErr == nil {
 			if err != nil {
@@ -397,6 +397,14 @@ func TestParseObjectLockRetentionHeaders(t *testing.T) {
 		} else if tt.expectedErr.Error() != err.Error() {
 			t.Fatalf("Case %d error: expected = %v, got = %v", i, tt.expectedErr, err)
 		}
+	}
+
+	past := http.Header{
+		xhttp.AmzObjectLockMode:            []string{"governance"},
+		xhttp.AmzObjectLockRetainUntilDate: []string{"2017-01-02T15:04:05Z"},
+	}
+	if _, _, err := ParseObjectLockRetentionHeaders(past, true); err != nil {
+		t.Fatalf("trusted replica past retention date: %v", err)
 	}
 }
 

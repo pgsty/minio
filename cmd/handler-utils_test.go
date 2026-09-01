@@ -307,7 +307,7 @@ func TestGetCopyObjectMetadataFromHeaderReplication(t *testing.T) {
 	}
 }
 
-func TestCloneRequestWithoutCopyReplicationHeaders(t *testing.T) {
+func TestCloneRequestWithoutReplicationHeaders(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPut, "http://localhost/test", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -320,9 +320,12 @@ func TestCloneRequestWithoutCopyReplicationHeaders(t *testing.T) {
 	req.Header.Set(xhttp.MinIOSourceObjectLegalHoldTimestamp, "2026-04-15T10:00:00Z")
 	req.Header.Set(xhttp.MinIOReplicationActualObjectSize, "123")
 	req.Header.Set(ReplicationSsecChecksumHeader, "checksum")
+	req.Header.Set(xhttp.AmzBucketReplicationStatus, "REPLICA")
+	req.Header.Set(xhttp.MinIOSourceDeleteMarker, "true")
+	req.Header.Set("X-Minio-Replication-Server-Side-Encryption-Sealed-Key", "sealed")
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	clone := cloneRequestWithoutCopyReplicationHeaders(req)
+	clone := cloneRequestWithoutReplicationHeaders(t.Context(), req)
 	if clone == req {
 		t.Fatal("expected cloned request")
 	}
@@ -336,6 +339,9 @@ func TestCloneRequestWithoutCopyReplicationHeaders(t *testing.T) {
 		xhttp.MinIOSourceObjectLegalHoldTimestamp,
 		xhttp.MinIOReplicationActualObjectSize,
 		ReplicationSsecChecksumHeader,
+		xhttp.AmzBucketReplicationStatus,
+		xhttp.MinIOSourceDeleteMarker,
+		"X-Minio-Replication-Server-Side-Encryption-Sealed-Key",
 	} {
 		if got := clone.Header.Get(header); got != "" {
 			t.Fatalf("expected %s to be stripped, got %q", header, got)

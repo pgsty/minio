@@ -19,6 +19,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -355,7 +356,20 @@ func TestBucketCorsMissingBucketUsesGlobalFallback(t *testing.T) {
 	})
 }
 
-func testBucketCorsMissingBucketUsesGlobalFallback(_ ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+func testBucketCorsMissingBucketUsesGlobalFallback(obj ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	// Model a fully started server: bucket metadata loading has completed, so
+	// a name that is not resident is genuinely not a CORS-bearing bucket.
+	restore := markBucketMetadataInitialized(t)
+	defer restore()
+
+	// A non-resident bucket name must not cause any bucket-metadata disk read.
+	oldObjectAPI := newObjectLayerFn()
+	counting := &corsLookupCountingObjectLayer{ObjectLayer: obj}
+	setObjectLayer(counting)
+	defer setObjectLayer(oldObjectAPI)
+
+	before := bucketMetadataMapLen()
+
 	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -372,6 +386,14 @@ func testBucketCorsMissingBucketUsesGlobalFallback(_ ObjectLayer, _ string, buck
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
 		t.Fatalf("allow-credentials = %q", got)
+	}
+	// Regression guard: the pre-auth CORS lookup for a non-existent bucket must
+	// neither read bucket metadata from disk nor cache a synthetic entry.
+	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
+		t.Fatalf("missing-bucket CORS lookup performed %d bucket metadata reads", got)
+	}
+	if after := bucketMetadataMapLen(); after != before {
+		t.Fatalf("missing-bucket CORS lookup grew metadataMap from %d to %d", before, after)
 	}
 }
 
@@ -469,5 +491,250 @@ func requireCorsOriginVary(t *testing.T, header http.Header) {
 	t.Helper()
 	if values := strings.Join(header.Values("Vary"), ","); !strings.Contains(values, "Origin") {
 		t.Fatalf("Vary = %q, missing Origin", values)
+	}
+}
+
+// markBucketMetadataInitialized marks the global bucket-metadata subsystem as
+// fully loaded, modeling a running server (the API test harness sets up the
+// subsystem but does not run Init). It returns a function that restores the
+// previous state.
+func markBucketMetadataInitialized(t *testing.T) func() {
+	t.Helper()
+	sys := globalBucketMetadataSys
+	if sys == nil {
+		t.Fatal("globalBucketMetadataSys is nil")
+	}
+	sys.Lock()
+	prev := sys.initialized
+	sys.initialized = true
+	sys.Unlock()
+	return func() {
+		sys.Lock()
+		sys.initialized = prev
+		sys.Unlock()
+	}
+}
+
+// bucketMetadataMapLen returns the number of resident bucket-metadata entries.
+func bucketMetadataMapLen() int {
+	sys := globalBucketMetadataSys
+	if sys == nil {
+		return 0
+	}
+	sys.RLock()
+	defer sys.RUnlock()
+	return len(sys.metadataMap)
+}
+
+// TestBucketCorsUnknownBucketDoesNotGrowMetadata is the regression guard for
+// the pre-auth resource-exhaustion path: an unauthenticated, Origin-bearing
+// request whose first path segment is not a real bucket must fall back to the
+// global CORS policy without loading bucket metadata from disk and without
+// caching a synthetic entry. Before the resident-only lookup, each distinct
+// name grew metadataMap by one and issued an erasure metadata probe.
+func TestBucketCorsUnknownBucketDoesNotGrowMetadata(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsUnknownBucketDoesNotGrowMetadata,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testBucketCorsUnknownBucketDoesNotGrowMetadata(obj ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	restore := markBucketMetadataInitialized(t)
+	defer restore()
+
+	oldObjectAPI := newObjectLayerFn()
+	counting := &corsLookupCountingObjectLayer{ObjectLayer: obj}
+	setObjectLayer(counting)
+	defer setObjectLayer(oldObjectAPI)
+
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+
+	before := bucketMetadataMapLen()
+	// Console/admin routes plus enough distinct valid names to make accidental
+	// cache growth or one metadata probe per name unambiguous.
+	names := []string{"minio", "api"}
+	for i := 0; i < 500; i++ {
+		names = append(names, fmt.Sprintf("cors-missing-%03d", i))
+	}
+	for _, name := range names {
+		for _, method := range []string{http.MethodGet, http.MethodOptions} {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(method, getGetObjectURL("", name, "obj"), nil)
+			req.Header.Set("Origin", "https://app.example.com")
+			if method == http.MethodOptions {
+				req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+			}
+			wrapped.ServeHTTP(rec, req)
+
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+				t.Fatalf("%s/%s: allow-origin = %q, want global fallback", name, method, got)
+			}
+		}
+	}
+	for _, path := range []string{"/../obj", "/A/obj", "/x/obj", "/minio/admin/v3/info", "/api/v1/login"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Origin", "https://app.example.com")
+		wrapped.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+			t.Fatalf("%s: allow-origin = %q, want global fallback", path, got)
+		}
+	}
+
+	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
+		t.Fatalf("unknown-bucket CORS lookups performed %d bucket metadata reads", got)
+	}
+	if after := bucketMetadataMapLen(); after != before {
+		t.Fatalf("unknown-bucket CORS lookups grew metadataMap from %d to %d", before, after)
+	}
+}
+
+func TestBucketCorsStartupMissFailsClosedWithoutIO(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsStartupMissFailsClosedWithoutIO,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testBucketCorsStartupMissFailsClosedWithoutIO(obj ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	oldObjectAPI := newObjectLayerFn()
+	oldMetadataSys := globalBucketMetadataSys
+	counting := &corsLookupCountingObjectLayer{ObjectLayer: obj}
+	setObjectLayer(counting)
+	globalBucketMetadataSys = NewBucketMetadataSys()
+	defer func() {
+		setObjectLayer(oldObjectAPI)
+		globalBucketMetadataSys = oldMetadataSys
+	}()
+
+	innerCalled := false
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		innerCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/startup-missing/object", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	wrapped.ServeHTTP(rec, req)
+
+	if !innerCalled || rec.Code != http.StatusNoContent {
+		t.Fatalf("startup miss did not reach inner handler: called=%v status=%d", innerCalled, rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("startup miss used permissive global CORS: %q", got)
+	}
+	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
+		t.Fatalf("startup miss performed %d metadata reads", got)
+	}
+	if got := globalBucketMetadataSys.Count(); got != 0 {
+		t.Fatalf("startup miss grew metadataMap to %d", got)
+	}
+}
+
+// markBucketMetadataLoadFailed records a bucket as one whose metadata failed to
+// load at startup while the subsystem is Initialized, modeling the degraded
+// state where a real bucket is not resident. Returns a restore function.
+func markBucketMetadataLoadFailed(t *testing.T, bucket string) func() {
+	t.Helper()
+	sys := globalBucketMetadataSys
+	if sys == nil {
+		t.Fatal("globalBucketMetadataSys is nil")
+	}
+	sys.Lock()
+	_, had := sys.loadFailed[bucket]
+	sys.loadFailed[bucket] = struct{}{}
+	sys.Unlock()
+	return func() {
+		sys.Lock()
+		if !had {
+			delete(sys.loadFailed, bucket)
+		}
+		sys.Unlock()
+	}
+}
+
+// TestBucketCorsLoadFailedBucketFailsClosed guards P1: a real bucket whose
+// metadata could not be loaded at startup (present in loadFailed, subsystem
+// Initialized) must NOT be answered with the permissive global CORS policy. We
+// cannot rule out a restrictive per-bucket config for it, so it must fail
+// closed — without a synchronous disk read.
+func TestBucketCorsLoadFailedBucketFailsClosed(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsLoadFailedBucketFailsClosed,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testBucketCorsLoadFailedBucketFailsClosed(obj ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	restoreInit := markBucketMetadataInitialized(t)
+	defer restoreInit()
+	restoreFail := markBucketMetadataLoadFailed(t, "strict-cors-bucket")
+	defer restoreFail()
+
+	oldObjectAPI := newObjectLayerFn()
+	counting := &corsLookupCountingObjectLayer{ObjectLayer: obj}
+	setObjectLayer(counting)
+	defer setObjectLayer(oldObjectAPI)
+
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+
+	for _, method := range []string{http.MethodGet, http.MethodOptions} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, getGetObjectURL("", "strict-cors-bucket", "object"), nil)
+		req.Header.Set("Origin", "https://app.example.com")
+		if method == http.MethodOptions {
+			req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		}
+		wrapped.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("%s: load-failed bucket fell back to global allow-origin %q", method, got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Fatalf("%s: load-failed bucket fell back to global credentials %q", method, got)
+		}
+	}
+	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
+		t.Fatalf("load-failed CORS lookup performed %d synchronous bucket metadata reads", got)
+	}
+}
+
+// TestBucketCorsInternalBucketFailsClosed guards P2: an Origin-bearing request
+// whose first path segment is the reserved .minio.sys namespace must preserve
+// GetConfig's errInvalidArgument semantics and fail closed, not fall back to
+// the permissive global CORS policy.
+func TestBucketCorsInternalBucketFailsClosed(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsInternalBucketFailsClosed,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testBucketCorsInternalBucketFailsClosed(_ ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	restoreInit := markBucketMetadataInitialized(t)
+	defer restoreInit()
+
+	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, getGetObjectURL("", minioMetaBucket, "object"), nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	wrapped.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("internal bucket fell back to global allow-origin %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("internal bucket fell back to global credentials %q", got)
 	}
 }

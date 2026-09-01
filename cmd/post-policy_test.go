@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	xhttp "github.com/minio/minio/internal/http"
 )
 
 const (
@@ -182,6 +183,49 @@ func testPostPolicyReservedBucketExploit(obj ObjectLayer, instanceType string, d
 // Wrapper for calling TestPostPolicyBucketHandler tests for both Erasure multiple disks and single node setup.
 func TestPostPolicyBucketHandler(t *testing.T) {
 	ExecObjectLayerTest(t, testPostPolicyBucketHandler)
+}
+
+func TestPostPolicyCannotForgeReplicationStatus(t *testing.T) {
+	ExecObjectLayerTest(t, testPostPolicyCannotForgeReplicationStatus)
+}
+
+func testPostPolicyCannotForgeReplicationStatus(obj ObjectLayer, instanceType string, t TestErrHandler) {
+	if err := newTestConfig(globalMinioDefaultRegion, obj); err != nil {
+		t.Fatalf("Initializing config.json failed")
+	}
+	bucketName := getRandomBucketName()
+	if err := obj.MakeBucket(context.Background(), bucketName, MakeBucketOptions{}); err != nil {
+		t.Fatalf("%s: make bucket: %v", instanceType, err)
+	}
+	apiRouter := initTestAPIEndPoints(obj, []string{"PostPolicy"})
+	credentials := globalActiveCred
+	now := UTCNow()
+	region := globalMinioDefaultRegion
+	objectPrefix := "post-policy-replication-status"
+	policyBytes := buildGenericPolicy(now, credentials.AccessKey, region, bucketName, objectPrefix, false)
+	policyText := strings.TrimSuffix(string(policyBytes), "]}") +
+		`,["eq","$x-amz-replication-status","REPLICA"]]}`
+	req, err := newPostRequestV4Generic("", bucketName, objectPrefix, []byte("post policy payload"),
+		credentials.AccessKey, credentials.SecretKey, region, now, []byte(policyText),
+		map[string]string{xhttp.AmzBucketReplicationStatus: "REPLICA"}, false, false, false)
+	if err != nil {
+		t.Fatalf("%s: create post request: %v", instanceType, err)
+	}
+	rec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("%s: POST status %d: %s", instanceType, rec.Code, rec.Body.String())
+	}
+	info, err := obj.GetObjectInfo(context.Background(), bucketName, objectPrefix+"/upload.txt", ObjectOptions{})
+	if err != nil {
+		t.Fatalf("%s: get object info: %v", instanceType, err)
+	}
+	if got := info.UserDefined[xhttp.AmzBucketReplicationStatus]; got != "" {
+		t.Fatalf("%s: forged replication status persisted as %q", instanceType, got)
+	}
+	if !info.ReplicationStatus.Empty() {
+		t.Fatalf("%s: forged replication status reached ObjectInfo: %q", instanceType, info.ReplicationStatus)
+	}
 }
 
 // testPostPolicyBucketHandler - Tests validate post policy handler uploading objects.

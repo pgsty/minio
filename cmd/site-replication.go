@@ -3557,13 +3557,12 @@ func (c *SiteReplicationSys) siteReplicationStatus(ctx context.Context, objAPI O
 						logInvalid("sse", err)
 					}
 				}
-				if s.CorsConfig != nil {
-					if _, err := decodeCORSReplicationPayload(s.CorsConfig); err == nil {
-						validCorsCfg[i] = true
-						corsCfgCount++
-					} else {
-						logInvalid("cors", err)
-					}
+				corsState, err := corsReplicationStateFromInfo(s.SRBucketInfo)
+				if err != nil {
+					logInvalid("cors", err)
+				} else if corsState.kind == corsReplicationLive {
+					validCorsCfg[i] = true
+					corsCfgCount++
 				}
 				ss, ok := info.StatsSummary[s.DeploymentID]
 				if !ok {

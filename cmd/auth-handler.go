@@ -786,10 +786,20 @@ func isPutActionAllowedWithRequestTags(ctx context.Context, atype authType, buck
 		return s3Err
 	}
 
-	logger.GetReqInfo(ctx).Cred = cred
-	logger.GetReqInfo(ctx).Owner = owner
-	logger.GetReqInfo(ctx).Region = region
+	reqInfo := logger.GetReqInfo(ctx)
+	if reqInfo == nil {
+		return ErrAccessDenied
+	}
+	reqInfo.Lock()
+	reqInfo.Cred = cred
+	reqInfo.Owner = owner
+	reqInfo.Region = region
+	reqInfo.Unlock()
 
+	return isPutActionAllowedWithCred(bucketName, objectName, r, action, requestTags, cred, owner)
+}
+
+func isPutActionAllowedWithCred(bucketName, objectName string, r *http.Request, action policy.Action, requestTags *string, cred auth.Credentials, owner bool) APIErrorCode {
 	// Do not check for PutObjectRetentionAction permission,
 	// if mode and retain until date are not set.
 	// Can happen when bucket has default lock config set

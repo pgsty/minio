@@ -41,9 +41,6 @@ func getDefaultOpts(header http.Header, copySource bool, metadata map[string]str
 		opts.ProxyHeaderSet = true
 		opts.ProxyRequest = strings.Join(v, "") == "true"
 	}
-	if _, ok := header[xhttp.MinIOSourceReplicationRequest]; ok {
-		opts.ReplicationRequest = true
-	}
 	opts.Speedtest = header.Get(globalObjectPerfUserMetadata) != ""
 
 	if copySource {
@@ -116,12 +113,15 @@ func getOpts(ctx context.Context, r *http.Request, bucket, object string) (Objec
 	}
 	opts.PartNumber = partNumber
 	opts.VersionID = vid
+	opts.ReplicationRequest = isTrustedReplication(ctx)
 
-	delMarker, err := parseBoolHeader(bucket, object, r.Header, xhttp.MinIOSourceDeleteMarker)
-	if err != nil {
-		return opts, err
+	if opts.ReplicationRequest {
+		delMarker, err := parseBoolHeader(bucket, object, r.Header, xhttp.MinIOSourceDeleteMarker)
+		if err != nil {
+			return opts, err
+		}
+		opts.DeleteMarker = delMarker
 	}
-	opts.DeleteMarker = delMarker
 
 	replReadyCheck, err := parseBoolHeader(bucket, object, r.Header, xhttp.MinIOCheckDMReplicationReady)
 	if err != nil {
@@ -297,20 +297,22 @@ func delOpts(ctx context.Context, r *http.Request, bucket, object string) (opts 
 		opts.VersionID = nullVersionID
 	}
 
-	delMarker, err := parseBoolHeader(bucket, object, r.Header, xhttp.MinIOSourceDeleteMarker)
-	if err != nil {
-		return opts, err
-	}
-	opts.DeleteMarker = delMarker
-
-	mtime := strings.TrimSpace(r.Header.Get(xhttp.MinIOSourceMTime))
-	if mtime != "" {
-		opts.MTime, err = time.Parse(time.RFC3339Nano, mtime)
+	if isTrustedReplication(ctx) {
+		delMarker, err := parseBoolHeader(bucket, object, r.Header, xhttp.MinIOSourceDeleteMarker)
 		if err != nil {
-			return opts, InvalidArgument{
-				Bucket: bucket,
-				Object: object,
-				Err:    fmt.Errorf("Unable to parse %s, failed with %w", xhttp.MinIOSourceMTime, err),
+			return opts, err
+		}
+		opts.DeleteMarker = delMarker
+
+		mtime := strings.TrimSpace(r.Header.Get(xhttp.MinIOSourceMTime))
+		if mtime != "" {
+			opts.MTime, err = time.Parse(time.RFC3339Nano, mtime)
+			if err != nil {
+				return opts, InvalidArgument{
+					Bucket: bucket,
+					Object: object,
+					Err:    fmt.Errorf("Unable to parse %s, failed with %w", xhttp.MinIOSourceMTime, err),
+				}
 			}
 		}
 	}
@@ -319,10 +321,10 @@ func delOpts(ctx context.Context, r *http.Request, bucket, object string) (opts 
 
 // get ObjectOptions for PUT calls from encryption headers and metadata
 func putOptsFromReq(ctx context.Context, r *http.Request, bucket, object string, metadata map[string]string) (opts ObjectOptions, err error) {
-	return putOpts(ctx, bucket, object, r.Form.Get(xhttp.VersionID), r.Header, metadata)
+	return putOpts(ctx, bucket, object, r.Form.Get(xhttp.VersionID), r.Header, metadata, isTrustedReplication(ctx))
 }
 
-func putOpts(ctx context.Context, bucket, object, vid string, hdrs http.Header, metadata map[string]string) (opts ObjectOptions, err error) {
+func putOpts(ctx context.Context, bucket, object, vid string, hdrs http.Header, metadata map[string]string, trustedReplication bool) (opts ObjectOptions, err error) {
 	versioned := globalBucketVersioningSys.PrefixEnabled(bucket, object)
 	versionSuspended := globalBucketVersioningSys.PrefixSuspended(bucket, object)
 
@@ -344,7 +346,7 @@ func putOpts(ctx context.Context, bucket, object, vid string, hdrs http.Header, 
 			}
 		}
 	}
-	opts, err = putOptsFromHeaders(ctx, hdrs, metadata)
+	opts, err = putOptsFromHeaders(ctx, hdrs, metadata, trustedReplication)
 	if err != nil {
 		return opts, InvalidArgument{
 			Bucket: bucket,
@@ -365,8 +367,15 @@ func putOpts(ctx context.Context, bucket, object, vid string, hdrs http.Header, 
 	return opts, nil
 }
 
-func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[string]string) (opts ObjectOptions, err error) {
-	mtimeStr := strings.TrimSpace(hdr.Get(xhttp.MinIOSourceMTime))
+func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[string]string, trustedReplication bool) (opts ObjectOptions, err error) {
+	var mtimeStr, retaintimeStr, lholdtimeStr, tagtimeStr, etag string
+	if trustedReplication {
+		mtimeStr = strings.TrimSpace(hdr.Get(xhttp.MinIOSourceMTime))
+		retaintimeStr = strings.TrimSpace(hdr.Get(xhttp.MinIOSourceObjectRetentionTimestamp))
+		lholdtimeStr = strings.TrimSpace(hdr.Get(xhttp.MinIOSourceObjectLegalHoldTimestamp))
+		tagtimeStr = strings.TrimSpace(hdr.Get(xhttp.MinIOSourceTaggingTimestamp))
+		etag = strings.TrimSpace(hdr.Get(xhttp.MinIOSourceETag))
+	}
 	var mtime time.Time
 	if mtimeStr != "" {
 		mtime, err = time.Parse(time.RFC3339Nano, mtimeStr)
@@ -374,7 +383,6 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 			return opts, fmt.Errorf("Unable to parse %s, failed with %w", xhttp.MinIOSourceMTime, err)
 		}
 	}
-	retaintimeStr := strings.TrimSpace(hdr.Get(xhttp.MinIOSourceObjectRetentionTimestamp))
 	var retaintimestmp time.Time
 	if retaintimeStr != "" {
 		retaintimestmp, err = time.Parse(time.RFC3339, retaintimeStr)
@@ -383,7 +391,6 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 		}
 	}
 
-	lholdtimeStr := strings.TrimSpace(hdr.Get(xhttp.MinIOSourceObjectLegalHoldTimestamp))
 	var lholdtimestmp time.Time
 	if lholdtimeStr != "" {
 		lholdtimestmp, err = time.Parse(time.RFC3339, lholdtimeStr)
@@ -391,7 +398,6 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 			return opts, fmt.Errorf("Unable to parse %s, failed with %w", xhttp.MinIOSourceObjectLegalHoldTimestamp, err)
 		}
 	}
-	tagtimeStr := strings.TrimSpace(hdr.Get(xhttp.MinIOSourceTaggingTimestamp))
 	var taggingtimestmp time.Time
 	if tagtimeStr != "" {
 		taggingtimestmp, err = time.Parse(time.RFC3339, tagtimeStr)
@@ -404,7 +410,6 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 		metadata = make(map[string]string)
 	}
 
-	etag := strings.TrimSpace(hdr.Get(xhttp.MinIOSourceETag))
 	if crypto.S3KMS.IsRequested(hdr) {
 		keyID, context, err := crypto.S3KMS.ParseHTTP(hdr)
 		if err != nil {
@@ -419,6 +424,7 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 			UserDefined:          metadata,
 			MTime:                mtime,
 			PreserveETag:         etag,
+			ReplicationRequest:   trustedReplication,
 		}
 		return op, nil
 	}
@@ -429,6 +435,7 @@ func putOptsFromHeaders(ctx context.Context, hdr http.Header, metadata map[strin
 	}
 
 	opts.MTime = mtime
+	opts.ReplicationRequest = trustedReplication
 	opts.ReplicationSourceLegalholdTimestamp = lholdtimestmp
 	opts.ReplicationSourceRetentionTimestamp = retaintimestmp
 	opts.ReplicationSourceTaggingTimestamp = taggingtimestmp
@@ -454,12 +461,17 @@ func copySrcOpts(ctx context.Context, r *http.Request, bucket, object string) (O
 	if err != nil {
 		return opts, err
 	}
+	opts.ReplicationRequest = isReplicaTrusted(ctx)
 	return opts, nil
 }
 
 // get ObjectOptions for CompleteMultipart calls
 func completeMultipartOpts(ctx context.Context, r *http.Request, bucket, object string) (opts ObjectOptions, err error) {
-	mtimeStr := strings.TrimSpace(r.Header.Get(xhttp.MinIOSourceMTime))
+	trustedReplication := isTrustedReplication(ctx)
+	var mtimeStr string
+	if trustedReplication {
+		mtimeStr = strings.TrimSpace(r.Header.Get(xhttp.MinIOSourceMTime))
+	}
 	var mtime time.Time
 	if mtimeStr != "" {
 		mtime, err = time.Parse(time.RFC3339Nano, mtimeStr)
@@ -495,12 +507,12 @@ func completeMultipartOpts(ctx context.Context, r *http.Request, bucket, object 
 			}
 		}
 	}
-	if _, ok := r.Header[xhttp.MinIOSourceReplicationRequest]; ok {
+	if trustedReplication {
 		opts.ReplicationRequest = true
 		opts.UserDefined[ReservedMetadataPrefix+"Actual-Object-Size"] = r.Header.Get(xhttp.MinIOReplicationActualObjectSize)
-	}
-	if r.Header.Get(ReplicationSsecChecksumHeader) != "" {
-		opts.UserDefined[ReplicationSsecChecksumHeader] = r.Header.Get(ReplicationSsecChecksumHeader)
+		if r.Header.Get(ReplicationSsecChecksumHeader) != "" {
+			opts.UserDefined[ReplicationSsecChecksumHeader] = r.Header.Get(ReplicationSsecChecksumHeader)
+		}
 	}
 	return opts, nil
 }

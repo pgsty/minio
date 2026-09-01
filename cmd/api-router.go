@@ -787,7 +787,16 @@ func corsHandler(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "" {
 			if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
-				cfg, _, err := globalBucketMetadataSys.GetCorsConfig(bucket)
+				// Resident-only lookup: this runs pre-auth for every
+				// Origin-bearing request using a client-supplied path segment as
+				// the bucket name. It must never load or cache metadata for
+				// arbitrary names (see GetResidentCorsConfig). GetResidentCorsConfig
+				// is the single decision point: it returns errInvalidArgument for
+				// the internal .minio.sys namespace (fail closed), a config for a
+				// resident bucket, errBucketMetadataNotInitialized for a real but
+				// unloaded bucket (fail closed), and errConfigNotFound otherwise
+				// (fall back to the global policy below).
+				cfg, _, err := globalBucketMetadataSys.GetResidentCorsConfig(bucket)
 				if err == nil && cfg != nil {
 					if applyBucketCors(w, r, cfg) {
 						return

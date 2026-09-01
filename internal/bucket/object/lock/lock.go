@@ -26,13 +26,11 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"net/textproto"
 	"strings"
 	"time"
 
 	"github.com/beevik/ntp"
 	"github.com/minio/minio/internal/amztime"
-	xhttp "github.com/minio/minio/internal/http"
 
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/pkg/v3/env"
@@ -435,7 +433,7 @@ func IsObjectLockRequested(h http.Header) bool {
 }
 
 // ParseObjectLockRetentionHeaders parses http headers to extract retention mode and retention date
-func ParseObjectLockRetentionHeaders(h http.Header) (rmode RetMode, r RetentionDate, err error) {
+func ParseObjectLockRetentionHeaders(h http.Header, allowPastRetainDate bool) (rmode RetMode, r RetentionDate, err error) {
 	retMode := h.Get(AmzObjectLockMode)
 	dateStr := h.Get(AmzObjectLockRetainUntilDate)
 	if len(retMode) == 0 || len(dateStr) == 0 {
@@ -455,15 +453,13 @@ func ParseObjectLockRetentionHeaders(h http.Header) (rmode RetMode, r RetentionD
 	if err != nil {
 		return rmode, r, ErrInvalidRetentionDate
 	}
-	_, replReq := h[textproto.CanonicalMIMEHeaderKey(xhttp.MinIOSourceReplicationRequest)]
-
 	t, err := UTCNowNTP()
 	if err != nil {
 		lockLogIf(context.Background(), err)
 		return rmode, r, ErrPastObjectLockRetainDate
 	}
 
-	if retDate.Before(t) && !replReq {
+	if retDate.Before(t) && !allowPastRetainDate {
 		return rmode, r, ErrPastObjectLockRetainDate
 	}
 

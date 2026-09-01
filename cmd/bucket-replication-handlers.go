@@ -617,7 +617,7 @@ func (api objectAPIHandlers) ValidateBucketReplicationCredsHandler(w http.Respon
 				ReplicationValidityCheck: true, // set this to validate the replication config
 			},
 		}
-		obj := path.Join(minioReservedBucket, globalLocalNodeNameHex, "deleteme")
+		obj := replicationValidationObject(rule)
 		ui, err := c.PutObject(ctx, clnt.Bucket, obj, reader, int64(len(buf)), "", "", putOpts)
 		if err != nil && !isReplicationPermissionCheck(ErrorRespToObjectError(err, bucket, obj)) {
 			writeErrorResponse(ctx, w, errorCodes.ToAPIErrWithErr(ErrReplicationValidationError, fmt.Errorf("s3:ReplicateObject permissions missing for replication user: %w", err)), r.URL)
@@ -657,4 +657,8 @@ func (api objectAPIHandlers) ValidateBucketReplicationCredsHandler(w http.Respon
 
 	// Write success response.
 	writeSuccessResponseHeadersOnly(w)
+}
+
+func replicationValidationObject(rule replication.Rule) string {
+	return path.Join(rule.Prefix(), minioReservedBucket, globalLocalNodeNameHex, "deleteme")
 }
