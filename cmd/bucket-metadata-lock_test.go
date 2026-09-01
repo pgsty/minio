@@ -120,6 +120,42 @@ func TestBucketMetadataLockPreservesTaggingAndSSE(t *testing.T) {
 	})
 }
 
+func TestMakeBucketForceCreatePreservesMetadata(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testMakeBucketForceCreatePreservesMetadata,
+	})
+}
+
+func testMakeBucketForceCreatePreservesMetadata(obj ObjectLayer, instanceType, bucket string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	ctx := t.Context()
+	policyJSON := fmt.Appendf(nil, `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::%s/*"}]}`, bucket)
+	corsXML := []byte(testSiteReplicationCORSDoc)
+	if _, err := globalBucketMetadataSys.Update(ctx, bucket, bucketPolicyConfig, policyJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updateLocalBucketCORSMetadata(ctx, obj, bucket, corsXML); err != nil {
+		t.Fatal(err)
+	}
+	before, err := readBucketMetadata(ctx, obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = obj.MakeBucket(ctx, bucket, MakeBucketOptions{ForceCreate: true}); err != nil {
+		t.Fatalf("%s: ForceCreate existing bucket: %v", instanceType, err)
+	}
+	after, err := readBucketMetadata(ctx, obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Created.Equal(before.Created) || !bytes.Equal(after.PolicyConfigJSON, policyJSON) || !bytes.Equal(after.CorsConfigXML, corsXML) {
+		t.Fatalf("%s: ForceCreate replaced metadata: before=%+v after=%+v", instanceType, before, after)
+	}
+}
+
 func testBucketMetadataLockPreservesTaggingAndSSE(obj ObjectLayer, instanceType, bucket string,
 	_ http.Handler, _ auth.Credentials, t *testing.T,
 ) {
