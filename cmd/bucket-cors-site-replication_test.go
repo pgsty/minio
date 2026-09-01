@@ -634,7 +634,7 @@ func testSiteReplicationStatusCountsCorsPerSite(obj ObjectLayer, _ string, bucke
 		globalSiteReplicationSys.Unlock()
 	}()
 
-	check := func(name string, wantLocal, wantRemote int) {
+	check := func(name string, wantLocal, wantRemote int, wantMismatch, wantReplicated bool) {
 		t.Helper()
 		status, err := globalSiteReplicationSys.siteReplicationStatus(ctx, obj, madmin.SRStatusOptions{Buckets: true})
 		if err != nil {
@@ -646,23 +646,51 @@ func testSiteReplicationStatusCountsCorsPerSite(obj ObjectLayer, _ string, bucke
 		if got := status.StatsSummary[remoteID].TotalCorsConfigCount; got != wantRemote {
 			t.Fatalf("%s: remote TotalCorsConfigCount = %d, want %d", name, got, wantRemote)
 		}
+		for _, id := range []string{localID, remoteID} {
+			bucketStatus := status.BucketStats[bucket][id]
+			wantSet := wantLocal != 0
+			if id == remoteID {
+				wantSet = wantRemote != 0
+			}
+			if bucketStatus.HasCorsCfgSet != wantSet {
+				t.Fatalf("%s: %s HasCorsCfgSet = %v, want %v", name, id, bucketStatus.HasCorsCfgSet, wantSet)
+			}
+			if bucketStatus.CorsCfgMismatch != wantMismatch {
+				t.Fatalf("%s: %s CorsCfgMismatch = %v, want %v", name, id, bucketStatus.CorsCfgMismatch, wantMismatch)
+			}
+			gotReplicated := status.StatsSummary[id].ReplicatedCorsConfig != 0
+			if gotReplicated != wantReplicated {
+				t.Fatalf("%s: %s ReplicatedCorsConfig = %d, want replicated %v", name, id, status.StatsSummary[id].ReplicatedCorsConfig, wantReplicated)
+			}
+		}
 	}
 
-	check("neither site", 0, 0)
+	check("neither site", 0, 0, false, false)
 	t1 := meta.Created.Add(time.Second)
 	if err = globalSiteReplicationSys.PeerBucketCorsConfigHandler(ctx, bucket, &encoded, t1); err != nil {
 		t.Fatal(err)
 	}
-	check("local site only", 1, 0)
+	check("local site only", 1, 0, true, false)
 
 	t2 := t1.Add(time.Second)
 	if err = globalSiteReplicationSys.PeerBucketCorsConfigHandler(ctx, bucket, nil, t2); err != nil {
 		t.Fatal(err)
 	}
 	remoteInfo.Buckets[bucket] = madmin.SRBucketInfo{
+		Bucket: bucket, CreatedAt: meta.Created, CorsConfig: &encoded,
+	}
+	check("live remote without timestamp", 0, 0, true, false)
+
+	invalidXML := base64.StdEncoding.EncodeToString([]byte(`not xml`))
+	remoteInfo.Buckets[bucket] = madmin.SRBucketInfo{
+		Bucket: bucket, CreatedAt: meta.Created, CorsConfig: &invalidXML, CorsConfigUpdatedAt: t2,
+	}
+	check("invalid remote XML", 0, 0, true, false)
+
+	remoteInfo.Buckets[bucket] = madmin.SRBucketInfo{
 		Bucket: bucket, CreatedAt: meta.Created, CorsConfig: &encoded, CorsConfigUpdatedAt: t2,
 	}
-	check("remote site only", 0, 1)
+	check("remote site only", 0, 1, true, false)
 
 	t3 := t2.Add(time.Second)
 	if err = globalSiteReplicationSys.PeerBucketCorsConfigHandler(ctx, bucket, &encoded, t3); err != nil {
@@ -671,7 +699,7 @@ func testSiteReplicationStatusCountsCorsPerSite(obj ObjectLayer, _ string, bucke
 	remoteInfo.Buckets[bucket] = madmin.SRBucketInfo{
 		Bucket: bucket, CreatedAt: meta.Created, CorsConfig: &encoded, CorsConfigUpdatedAt: t3,
 	}
-	check("both sites", 1, 1)
+	check("both sites", 1, 1, false, true)
 }
 
 func TestCORSReplicationStateOrdering(t *testing.T) {
