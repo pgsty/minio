@@ -1620,13 +1620,17 @@ func (c *SiteReplicationSys) PeerBucketMetadataUpdateHandler(ctx context.Context
 		if err = validateCORSReplicationPayload(corsConfigData); err != nil {
 			return wrapSRErr(err)
 		}
-		var unlock func()
-		ctx, unlock, err = lockBucketCORSMetadata(ctx, objectAPI, item.Bucket)
-		if err != nil {
-			return wrapSRErr(err)
-		}
-		defer unlock()
 	}
+	ctx, unlock, err := lockBucketMetadata(ctx, objectAPI, item.Bucket)
+	if err != nil {
+		return wrapSRErr(err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 
 	meta, err := readBucketMetadata(ctx, objectAPI, item.Bucket)
 	if err != nil {
@@ -1695,7 +1699,13 @@ func (c *SiteReplicationSys) PeerBucketMetadataUpdateHandler(ctx context.Context
 		}
 	}
 
-	return globalBucketMetadataSys.save(ctx, meta)
+	if err = globalBucketMetadataSys.saveMetadata(ctx, objectAPI, meta); err != nil {
+		return err
+	}
+	unlock()
+	locked = false
+	globalNotificationSys.LoadBucketMetadata(bgContext(ctx), item.Bucket)
+	return nil
 }
 
 // PeerBucketPolicyHandler - copies/deletes policy to local cluster.
@@ -1960,18 +1970,6 @@ func newBucketCORSReplicationEvent(bucket string, meta BucketMetadata) (madmin.S
 	}, true
 }
 
-func lockBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string) (context.Context, func(), error) {
-	// The lock name is deliberately different from .metadata.bin. Saving the
-	// metadata locks that object internally, and namespace locks are not
-	// re-entrant.
-	lock := objectAPI.NewNSLock(minioMetaBucket, pathJoin(bucketMetaPrefix, bucket, "cors-config.lock"))
-	lkctx, err := lock.GetLock(ctx, globalOperationTimeout)
-	if err != nil {
-		return nil, nil, err
-	}
-	return lkctx.Context(), func() { lock.Unlock(lkctx) }, nil
-}
-
 func updateLocalBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string, configData []byte) (time.Time, error) {
 	return applyBucketCORSMetadata(ctx, objectAPI, bucket, configData, time.Time{}, true)
 }
@@ -1984,11 +1982,16 @@ func applyBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket 
 		return time.Time{}, err
 	}
 
-	ctx, unlock, err := lockBucketCORSMetadata(ctx, objectAPI, bucket)
+	ctx, unlock, err := lockBucketMetadata(ctx, objectAPI, bucket)
 	if err != nil {
 		return time.Time{}, err
 	}
-	defer unlock()
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 
 	var meta BucketMetadata
 	if local {
@@ -2026,9 +2029,12 @@ func applyBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket 
 
 	meta.CorsConfigXML = bytes.Clone(configData)
 	meta.CorsConfigUpdatedAt = updatedAt
-	if err = globalBucketMetadataSys.save(ctx, meta); err != nil {
+	if err = globalBucketMetadataSys.saveMetadata(ctx, objectAPI, meta); err != nil {
 		return time.Time{}, err
 	}
+	unlock()
+	locked = false
+	globalNotificationSys.LoadBucketMetadata(bgContext(ctx), bucket)
 	return updatedAt, nil
 }
 
