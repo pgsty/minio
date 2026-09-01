@@ -175,7 +175,7 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 	payload := []byte("replication trust put payload")
 	sourceMTime := time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC)
 
-	request := func(t *testing.T, object string, creds auth.Credentials, status string) *httptest.ResponseRecorder {
+	request := func(t *testing.T, object string, creds auth.Credentials, status string, check bool) *httptest.ResponseRecorder {
 		t.Helper()
 		headers := map[string]string{
 			xhttp.MinIOSourceReplicationRequest: "true",
@@ -184,6 +184,9 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 		}
 		if status != "" {
 			headers[xhttp.AmzBucketReplicationStatus] = status
+		}
+		if check {
+			headers[xhttp.MinIOSourceReplicationCheck] = "true"
 		}
 		req, err := newTestSignedRequestV4(http.MethodPut, getPutObjectURL("", bucketName, object),
 			int64(len(payload)), bytes.NewReader(payload), creds.AccessKey, creds.SecretKey, headers)
@@ -197,7 +200,7 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 
 	t.Run("untrusted marker is ordinary", func(t *testing.T) {
 		object := "replication-trust/put-ordinary"
-		if rec := request(t, object, putOnly, "PENDING"); rec.Code != http.StatusOK {
+		if rec := request(t, object, putOnly, "PENDING", false); rec.Code != http.StatusOK {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 		}
 		info, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
@@ -212,7 +215,7 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 
 	t.Run("unauthorized replica is denied", func(t *testing.T) {
 		object := "replication-trust/put-denied-replica"
-		if rec := request(t, object, putOnly, "REPLICA"); rec.Code != http.StatusForbidden {
+		if rec := request(t, object, putOnly, "REPLICA", false); rec.Code != http.StatusForbidden {
 			t.Fatalf("status %d, want 403: %s", rec.Code, rec.Body.String())
 		}
 		if _, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{}); err == nil {
@@ -222,7 +225,7 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 
 	t.Run("trusted batch preserves source state", func(t *testing.T) {
 		object := "replication-trust/put-batch"
-		if rec := request(t, object, replicator, ""); rec.Code != http.StatusOK {
+		if rec := request(t, object, replicator, "", false); rec.Code != http.StatusOK {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 		}
 		info, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
@@ -237,7 +240,7 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 
 	t.Run("trusted replica persists replica state", func(t *testing.T) {
 		object := "replication-trust/put-replica"
-		if rec := request(t, object, replicator, "REPLICA"); rec.Code != http.StatusOK {
+		if rec := request(t, object, replicator, "REPLICA", false); rec.Code != http.StatusOK {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 		}
 		info, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
@@ -248,6 +251,25 @@ func testAPIPutObjectReplicationTrust(obj ObjectLayer, instanceType, bucketName 
 			t.Fatalf("replica status not persisted: %#v", info.UserDefined)
 		}
 	})
+
+	for _, test := range []struct {
+		name       string
+		creds      auth.Credentials
+		wantStatus int
+	}{
+		{name: "validity check requires ReplicateObject", creds: putOnly, wantStatus: http.StatusForbidden},
+		{name: "validity check succeeds for replicator", creds: replicator, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			object := "replication-trust/put-check-" + strconv.Itoa(test.wantStatus)
+			if rec := request(t, object, test.creds, "REPLICA", true); rec.Code != test.wantStatus {
+				t.Fatalf("status %d, want %d: %s", rec.Code, test.wantStatus, rec.Body.String())
+			}
+			if _, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{}); err == nil {
+				t.Fatal("replication validity check created an object")
+			}
+		})
+	}
 }
 
 func TestAPICopyObjectMarkerOnlyDoesNotCopyCiphertext(t *testing.T) {
@@ -321,13 +343,23 @@ func testAPIDeleteObjectReplicationTrust(obj ObjectLayer, instanceType, bucketNa
 			t.Fatal(err)
 		}
 	}
-	remove := func(t *testing.T, object string, creds auth.Credentials) *httptest.ResponseRecorder {
+	remove := func(t *testing.T, object string, creds auth.Credentials, versionID string, deleteMarker, check bool) *httptest.ResponseRecorder {
 		t.Helper()
 		headers := map[string]string{
 			xhttp.MinIOSourceReplicationRequest: "true",
 			xhttp.AmzBucketReplicationStatus:    "REPLICA",
 		}
-		req, err := newTestSignedRequestV4(http.MethodDelete, getDeleteObjectURL("", bucketName, object),
+		if deleteMarker {
+			headers[xhttp.MinIOSourceDeleteMarker] = "true"
+		}
+		if check {
+			headers[xhttp.MinIOSourceReplicationCheck] = "true"
+		}
+		target := getDeleteObjectURL("", bucketName, object)
+		if versionID != "" {
+			target += "?" + url.Values{xhttp.VersionID: {versionID}}.Encode()
+		}
+		req, err := newTestSignedRequestV4(http.MethodDelete, target,
 			0, nil, creds.AccessKey, creds.SecretKey, headers)
 		if err != nil {
 			t.Fatal(err)
@@ -340,7 +372,7 @@ func testAPIDeleteObjectReplicationTrust(obj ObjectLayer, instanceType, bucketNa
 	t.Run("replica status without ReplicateDelete is denied", func(t *testing.T) {
 		object := "replication-trust/delete-denied"
 		put(t, object)
-		if rec := remove(t, object, deleteOnly); rec.Code != http.StatusForbidden {
+		if rec := remove(t, object, deleteOnly, "", false, false); rec.Code != http.StatusForbidden {
 			t.Fatalf("status %d, want 403: %s", rec.Code, rec.Body.String())
 		}
 		if _, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{}); err != nil {
@@ -351,10 +383,40 @@ func testAPIDeleteObjectReplicationTrust(obj ObjectLayer, instanceType, bucketNa
 	t.Run("trusted replica delete remains supported", func(t *testing.T) {
 		object := "replication-trust/delete-allowed"
 		put(t, object)
-		if rec := remove(t, object, replicator); rec.Code != http.StatusNoContent {
+		if rec := remove(t, object, replicator, "", false, false); rec.Code != http.StatusNoContent {
 			t.Fatalf("status %d, want 204: %s", rec.Code, rec.Body.String())
 		}
 	})
+
+	for _, shape := range []struct {
+		name         string
+		deleteMarker bool
+	}{
+		{name: "delete-marker", deleteMarker: true},
+		{name: "version-purge"},
+	} {
+		t.Run("validity check/"+shape.name, func(t *testing.T) {
+			for _, test := range []struct {
+				name       string
+				creds      auth.Credentials
+				wantStatus int
+			}{
+				{name: "requires ReplicateDelete", creds: deleteOnly, wantStatus: http.StatusForbidden},
+				{name: "succeeds for replicator", creds: replicator, wantStatus: http.StatusBadRequest},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					object := "replication-trust/delete-check-" + shape.name + "-" + strconv.Itoa(test.wantStatus)
+					put(t, object)
+					if rec := remove(t, object, test.creds, mustGetUUID(), shape.deleteMarker, true); rec.Code != test.wantStatus {
+						t.Fatalf("status %d, want %d: %s", rec.Code, test.wantStatus, rec.Body.String())
+					}
+					if _, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{}); err != nil {
+						t.Fatalf("replication validity check removed object: %v", err)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestAPISSECMultipartReplicationTrust(t *testing.T) {

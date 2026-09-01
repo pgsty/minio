@@ -2073,16 +2073,6 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	if _, ok := r.Header[xhttp.MinIOSourceReplicationCheck]; ok {
-		// requests to just validate replication settings and permissions are not allowed to write data
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrReplicationPermissionCheckError), r.URL)
-		return
-	}
-
-	if err := enforceBucketQuotaHard(ctx, bucket, size); err != nil {
-		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
-		return
-	}
 	rawReplica := hasReplicaStatus(r.Header)
 	markerExact := hasReplicationMarker(r.Header)
 	replicationPermitted := false
@@ -2091,6 +2081,16 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 	}
 	if rawReplica && !replicationPermitted {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+		return
+	}
+	if _, ok := r.Header[xhttp.MinIOSourceReplicationCheck]; ok {
+		// requests to just validate replication settings and permissions are not allowed to write data
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrReplicationPermissionCheckError), r.URL)
+		return
+	}
+
+	if err := enforceBucketQuotaHard(ctx, bucket, size); err != nil {
+		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
 	}
 	trustedReplication := markerExact && replicationPermitted
@@ -2795,12 +2795,6 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}
-	if _, ok := r.Header[xhttp.MinIOSourceReplicationCheck]; ok {
-		// requests to just validate replication settings and permissions are not allowed to delete data
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrReplicationPermissionCheckError), r.URL)
-		return
-	}
-
 	rawReplica := hasReplicaStatus(r.Header)
 	markerExact := hasReplicationMarker(r.Header)
 	replicationPermitted := false
@@ -2809,6 +2803,11 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 	}
 	if rawReplica && !replicationPermitted {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+		return
+	}
+	if _, ok := r.Header[xhttp.MinIOSourceReplicationCheck]; ok {
+		// requests to just validate replication settings and permissions are not allowed to delete data
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrReplicationPermissionCheckError), r.URL)
 		return
 	}
 	trustedReplication := markerExact && replicationPermitted
