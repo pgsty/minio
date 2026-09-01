@@ -319,6 +319,7 @@ func testAPIDeleteObjectVersionDenyAndReplicationCompatibility(obj ObjectLayer, 
 		{"Effect":"Allow","Action":["s3:DeleteObject","s3:DeleteObjectVersion","s3:ReplicateDelete"],"Resource":["arn:aws:s3:::`+bucket+`/*"]},
 		{"Effect":"Deny","Action":"s3:DeleteObjectVersion","Resource":"arn:aws:s3:::`+bucket+`/deny/*"}
 	]`)
+	deleteOnly := newObjectAttributesAuthzUser(t, instanceType, bucket, `"s3:DeleteObject"`)
 
 	t.Run("ordinary explicit deny wins", func(t *testing.T) {
 		object := "deny/ordinary"
@@ -349,6 +350,25 @@ func testAPIDeleteObjectVersionDenyAndReplicationCompatibility(obj ObjectLayer, 
 		versionID := put(t, object)
 		if rec := request(t, object, versionID, denied, true); rec.Code != http.StatusForbidden {
 			t.Fatalf("status %d, want 403: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("marker alone cannot enter the replication path", func(t *testing.T) {
+		object := "replication/fake-marker"
+		versionID := put(t, object)
+		target := getDeleteObjectURL("", bucket, object) + "?" + url.Values{xhttp.VersionID: {versionID}}.Encode()
+		req, err := newTestSignedRequestV4(http.MethodDelete, target, 0, nil, deleteOnly.AccessKey, deleteOnly.SecretKey,
+			map[string]string{xhttp.MinIOSourceReplicationRequest: "true"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status %d, want 403: %s", rec.Code, rec.Body.String())
+		}
+		if _, err = obj.GetObjectInfo(t.Context(), bucket, object, ObjectOptions{VersionID: versionID}); err != nil {
+			t.Fatalf("fake marker removed the version: %v", err)
 		}
 	})
 }

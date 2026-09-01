@@ -465,11 +465,6 @@ func (api objectAPIHandlers) DeleteMultipleObjectsHandler(w http.ResponseWriter,
 
 	deleteObjectsFn := objectAPI.DeleteObjects
 
-	// Return Malformed XML as S3 spec if the number of objects is empty
-	if len(deleteObjectsReq.Objects) == 0 || len(deleteObjectsReq.Objects) > maxDeleteList {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedXML), r.URL)
-		return
-	}
 	reqInfo := logger.GetReqInfo(ctx)
 	if reqInfo == nil {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
@@ -479,6 +474,11 @@ func (api objectAPIHandlers) DeleteMultipleObjectsHandler(w http.ResponseWriter,
 	reqInfo.ObjectName = ""
 	if s3Err := authenticateRequest(ctx, r, policy.DeleteObjectAction); s3Err != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
+		return
+	}
+	// Return Malformed XML as S3 spec if the number of objects is empty.
+	if len(deleteObjectsReq.Objects) == 0 || len(deleteObjectsReq.Objects) > maxDeleteList {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMalformedXML), r.URL)
 		return
 	}
 
