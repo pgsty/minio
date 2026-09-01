@@ -20,8 +20,10 @@ import (
 	"github.com/minio/pkg/v3/policy"
 )
 
-type replicationTrustKey struct{}
-type replicaTrustKey struct{}
+type (
+	replicationTrustKey struct{}
+	replicaTrustKey     struct{}
+)
 
 // hasReplicationMarker reports whether the internal replication marker has
 // its one accepted wire value. Header presence alone is never a trust signal.
@@ -105,7 +107,7 @@ func hasReplicationRequestHeaders(h http.Header) bool {
 	return false
 }
 
-func cloneRequestWithoutReplicationHeaders(r *http.Request, ctx context.Context) *http.Request {
+func cloneRequestWithoutReplicationHeaders(ctx context.Context, r *http.Request) *http.Request {
 	clone := r.Clone(ctx)
 	stripReplicationRequestHeaders(clone.Header)
 	return clone
@@ -119,5 +121,5 @@ func applyReplicationTrust(ctx context.Context, r *http.Request, trusted, replic
 	if trusted {
 		return ctx, r.WithContext(ctx)
 	}
-	return ctx, cloneRequestWithoutReplicationHeaders(r, ctx)
+	return ctx, cloneRequestWithoutReplicationHeaders(ctx, r)
 }

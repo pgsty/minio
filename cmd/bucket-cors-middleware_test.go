@@ -495,7 +495,7 @@ func requireCorsOriginVary(t *testing.T, header http.Header) {
 }
 
 // markBucketMetadataInitialized marks the global bucket-metadata subsystem as
-// fully loaded, modelling a running server (the API test harness sets up the
+// fully loaded, modeling a running server (the API test harness sets up the
 // subsystem but does not run Init). It returns a function that restores the
 // previous state.
 func markBucketMetadataInitialized(t *testing.T) func() {
@@ -637,7 +637,7 @@ func testBucketCorsStartupMissFailsClosedWithoutIO(obj ObjectLayer, _ string, _ 
 }
 
 // markBucketMetadataLoadFailed records a bucket as one whose metadata failed to
-// load at startup while the subsystem is Initialized, modelling the degraded
+// load at startup while the subsystem is Initialized, modeling the degraded
 // state where a real bucket is not resident. Returns a restore function.
 func markBucketMetadataLoadFailed(t *testing.T, bucket string) func() {
 	t.Helper()

@@ -325,7 +325,7 @@ func TestCloneRequestWithoutReplicationHeaders(t *testing.T) {
 	req.Header.Set("X-Minio-Replication-Server-Side-Encryption-Sealed-Key", "sealed")
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	clone := cloneRequestWithoutReplicationHeaders(req, t.Context())
+	clone := cloneRequestWithoutReplicationHeaders(t.Context(), req)
 	if clone == req {
 		t.Fatal("expected cloned request")
 	}

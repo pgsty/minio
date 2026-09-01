@@ -2522,7 +2522,7 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 	trustedRequestCtx := withReplicationTrust(ctx, true, rawReplica)
 	trustedRequest := entryRequestBase.WithContext(trustedRequestCtx)
 	cleanRequestCtx := withReplicationTrust(ctx, false, false)
-	cleanRequest := cloneRequestWithoutReplicationHeaders(entryRequestBase, cleanRequestCtx)
+	cleanRequest := cloneRequestWithoutReplicationHeaders(cleanRequestCtx, entryRequestBase)
 	trustedReqParams := extractReqParams(trustedRequest)
 	cleanReqParams := extractReqParams(cleanRequest)
 
@@ -2572,7 +2572,7 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 		entryTrusted := markerExact && replicationPermitted
 		replicaTrusted := entryTrusted && rawReplica
 		entryCtx := cleanRequestCtx
-		entryReq := cloneRequestWithoutReplicationHeaders(entryAuthReq, cleanRequestCtx)
+		entryReq := cloneRequestWithoutReplicationHeaders(cleanRequestCtx, entryAuthReq)
 		reqParams := cleanReqParams
 		if entryTrusted {
 			entryCtx = trustedRequestCtx
