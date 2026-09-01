@@ -898,30 +898,33 @@ func (z *erasureServerPools) MakeBucket(ctx context.Context, bucket string, opts
 	}
 	err = func() error {
 		defer unlock()
-		meta, err := readBucketMetadata(ctx, z, bucket)
-		if errors.Is(err, errConfigNotFound) {
-			meta = newBucketMetadata(bucket)
-		} else if err != nil {
-			return err
+		meta := newBucketMetadata(bucket)
+		if opts.ForceCreate {
+			existing, err := loadBucketMetadataParse(ctx, z, bucket, true)
+			if err == nil {
+				meta = existing
+			} else if !errors.Is(err, errConfigNotFound) {
+				return err
+			}
 		}
 		if meta.Created.IsZero() {
 			meta.SetCreatedAt(opts.CreatedAt)
 		}
 		if opts.LockEnabled {
-			if len(meta.VersioningConfigXML) == 0 {
-				meta.VersioningConfigXML = enabledBucketVersioningConfig
-				meta.VersioningConfigUpdatedAt = meta.Created
+			if err := enablePeerBucketVersioning(&meta); err != nil {
+				return err
 			}
 			if len(meta.ObjectLockConfigXML) == 0 {
 				meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
 				meta.ObjectLockConfigUpdatedAt = meta.Created
 			}
 		}
-		if opts.VersioningEnabled && len(meta.VersioningConfigXML) == 0 {
-			meta.VersioningConfigXML = enabledBucketVersioningConfig
-			meta.VersioningConfigUpdatedAt = meta.Created
+		if opts.VersioningEnabled {
+			if err := enablePeerBucketVersioning(&meta); err != nil {
+				return err
+			}
 		}
-		if err = meta.Save(ctx, z); err != nil {
+		if err = meta.Save(bgContext(ctx), z); err != nil {
 			return err
 		}
 		globalBucketMetadataSys.Set(bucket, meta)

@@ -20,7 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/minio/internal/auth"
+	"github.com/minio/minio/internal/bucket/lifecycle"
+	"github.com/minio/minio/internal/bucket/versioning"
 )
 
 type metadataRMWWriterKey struct{}
@@ -33,6 +36,8 @@ type metadataRMWBarrierObjectLayer struct {
 	bLockAttempt chan struct{}
 	aReadyOnce   sync.Once
 	bLockOnce    sync.Once
+	cancelOnce   sync.Once
+	cancelOnPut  context.CancelFunc
 	reads        atomic.Int64
 }
 
@@ -52,6 +57,9 @@ func (o *metadataRMWBarrierObjectLayer) GetObjectNInfo(ctx context.Context, buck
 }
 
 func (o *metadataRMWBarrierObjectLayer) PutObject(ctx context.Context, bucket, object string, data *PutObjReader, opts ObjectOptions) (ObjectInfo, error) {
+	if bucket == minioMetaBucket && object == o.metadataObject() && o.cancelOnPut != nil {
+		o.cancelOnce.Do(o.cancelOnPut)
+	}
 	if bucket == minioMetaBucket && object == o.metadataObject() && ctx.Value(metadataRMWWriterKey{}) == "A" {
 		o.aReadyOnce.Do(func() { close(o.aReady) })
 		select {
@@ -120,6 +128,69 @@ func TestBucketMetadataLockPreservesTaggingAndSSE(t *testing.T) {
 	})
 }
 
+func TestBucketMetadataLockPreservesPeerBulkAndLocalUpdate(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketMetadataLockPreservesPeerBulkAndLocalUpdate,
+	})
+}
+
+func testBucketMetadataLockPreservesPeerBulkAndLocalUpdate(obj ObjectLayer, instanceType, bucket string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	meta, err := readBucketMetadata(t.Context(), obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyJSON := fmt.Appendf(nil, `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::%s/*"}]}`, bucket)
+	tagXML := []byte(`<Tagging><TagSet><Tag><Key>local</Key><Value>tag</Value></Tag></TagSet></Tagging>`)
+	runBucketMetadataRMWConflict(t, obj, bucket,
+		func(ctx context.Context, objectAPI ObjectLayer) error {
+			return globalSiteReplicationSys.PeerBucketMetadataUpdateHandler(ctx, madmin.SRBucketMeta{
+				Bucket: bucket, Policy: policyJSON, UpdatedAt: meta.Created.Add(time.Second),
+			})
+		},
+		func(ctx context.Context, objectAPI ObjectLayer) error {
+			_, err := globalBucketMetadataSys.Update(ctx, bucket, bucketTaggingConfig, tagXML)
+			return err
+		},
+		func(meta BucketMetadata) bool {
+			return bytes.Equal(meta.PolicyConfigJSON, policyJSON) && bytes.Equal(meta.TaggingConfigXML, tagXML)
+		}, instanceType+": peer bulk+local tagging")
+}
+
+func TestBucketMetadataLockPreservesLifecycleDeleteAndSSE(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketMetadataLockPreservesLifecycleDeleteAndSSE,
+	})
+}
+
+func testBucketMetadataLockPreservesLifecycleDeleteAndSSE(obj ObjectLayer, instanceType, bucket string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	lifecycleXML := []byte(`<LifecycleConfiguration><Rule><ID>expire</ID><Filter><Prefix>logs/</Prefix></Filter><Status>Enabled</Status><Expiration><Days>30</Days></Expiration></Rule></LifecycleConfiguration>`)
+	if _, err := globalBucketMetadataSys.Update(t.Context(), bucket, bucketLifecycleConfig, lifecycleXML); err != nil {
+		t.Fatal(err)
+	}
+	sseXML := []byte(`<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`)
+	runBucketMetadataRMWConflict(t, obj, bucket,
+		func(ctx context.Context, objectAPI ObjectLayer) error {
+			_, err := globalBucketMetadataSys.Delete(ctx, bucket, bucketLifecycleConfig)
+			return err
+		},
+		func(ctx context.Context, objectAPI ObjectLayer) error {
+			_, err := globalBucketMetadataSys.Update(ctx, bucket, bucketSSEConfig, sseXML)
+			return err
+		},
+		func(meta BucketMetadata) bool {
+			cfg, err := lifecycle.ParseLifecycleConfig(bytes.NewReader(meta.LifecycleConfigXML))
+			return err == nil && cfg.ExpiryUpdatedAt != nil && len(cfg.Rules) == 0 && bytes.Equal(meta.EncryptionConfigXML, sseXML)
+		}, instanceType+": lifecycle delete+SSE")
+}
+
 func TestMakeBucketForceCreatePreservesMetadata(t *testing.T) {
 	defer DetectTestLeak(t)()
 	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
@@ -172,6 +243,122 @@ func TestApplyImportedBucketMetadataPreservesUnspecifiedFields(t *testing.T) {
 	src.PolicyConfigJSON[0] = '!'
 	if dst.PolicyConfigJSON[0] == '!' {
 		t.Fatal("import patch retained the source byte slice")
+	}
+}
+
+func TestMakeBucketDoesNotAdoptGhostMetadata(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testMakeBucketDoesNotAdoptGhostMetadata,
+	})
+}
+
+func testMakeBucketDoesNotAdoptGhostMetadata(obj ObjectLayer, instanceType, _ string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	ctx := t.Context()
+	bucket := getRandomBucketName()
+	if err := obj.MakeBucket(ctx, bucket, MakeBucketOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	policyJSON := fmt.Appendf(nil, `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::%s/*"}]}`, bucket)
+	if _, err := globalBucketMetadataSys.Update(ctx, bucket, bucketPolicyConfig, policyJSON); err != nil {
+		t.Fatal(err)
+	}
+	oldMeta, err := readBucketMetadata(ctx, obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, ok := obj.(*erasureServerPools)
+	if !ok {
+		t.Fatalf("%s: object layer is %T, want *erasureServerPools", instanceType, obj)
+	}
+	if err = z.s3Peer.DeleteBucket(ctx, bucket, DeleteBucketOptions{Force: true}); err != nil {
+		t.Fatalf("%s: delete bucket volume only: %v", instanceType, err)
+	}
+	if err = obj.MakeBucket(ctx, bucket, MakeBucketOptions{}); err != nil {
+		t.Fatalf("%s: recreate bucket: %v", instanceType, err)
+	}
+	newMeta, err := readBucketMetadata(ctx, obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(newMeta.PolicyConfigJSON, policyJSON) || newMeta.Created.Equal(oldMeta.Created) {
+		t.Fatalf("%s: new bucket adopted ghost metadata: old=%+v new=%+v", instanceType, oldMeta, newMeta)
+	}
+}
+
+func TestMakeBucketForceCreateLockEnablesVersioning(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testMakeBucketForceCreateLockEnablesVersioning,
+	})
+}
+
+func TestPeerBucketMetadataSaveSurvivesCallerCancellation(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testPeerBucketMetadataSaveSurvivesCallerCancellation,
+	})
+}
+
+func testPeerBucketMetadataSaveSurvivesCallerCancellation(obj ObjectLayer, instanceType, bucket string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	previousObjectAPI := newObjectLayerFn()
+	ctx, cancel := context.WithCancel(t.Context())
+	barrier := &metadataRMWBarrierObjectLayer{
+		ObjectLayer: obj,
+		bucket:      bucket,
+		cancelOnPut: cancel,
+	}
+	setObjectLayer(barrier)
+	defer setObjectLayer(previousObjectAPI)
+
+	err := globalSiteReplicationSys.PeerBucketMakeWithVersioningHandler(ctx, bucket, MakeBucketOptions{VersioningEnabled: true})
+	if err != nil {
+		t.Fatalf("%s: peer metadata save failed after caller cancellation: %v", instanceType, err)
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("%s: metadata write did not trigger caller cancellation", instanceType)
+	}
+	meta, err := readBucketMetadata(t.Context(), obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := versioning.ParseConfig(bytes.NewReader(meta.VersioningConfigXML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Enabled() {
+		t.Fatalf("%s: peer metadata save lost versioning after cancellation", instanceType)
+	}
+}
+
+func testMakeBucketForceCreateLockEnablesVersioning(obj ObjectLayer, instanceType, bucket string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	ctx := t.Context()
+	suspended := []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Suspended</Status></VersioningConfiguration>`)
+	if _, err := globalBucketMetadataSys.Update(ctx, bucket, bucketVersioningConfig, suspended); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.MakeBucket(ctx, bucket, MakeBucketOptions{ForceCreate: true, LockEnabled: true}); err != nil {
+		t.Fatalf("%s: ForceCreate with object lock: %v", instanceType, err)
+	}
+	meta, err := readBucketMetadata(ctx, obj, bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := versioning.ParseConfig(bytes.NewReader(meta.VersioningConfigXML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Enabled() || len(meta.ObjectLockConfigXML) == 0 {
+		t.Fatalf("%s: object lock state lacks enabled versioning: metadata=%+v", instanceType, meta)
 	}
 }
 

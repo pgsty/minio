@@ -952,7 +952,7 @@ func (c *SiteReplicationSys) PeerBucketMakeWithVersioningHandler(ctx context.Con
 				meta.ObjectLockConfigUpdatedAt = meta.Created
 			}
 		}
-		return globalBucketMetadataSys.saveMetadata(ctx, objAPI, meta)
+		return globalBucketMetadataSys.saveMetadata(bgContext(ctx), objAPI, meta)
 	}()
 	if err != nil {
 		return wrapSRErr(c.annotateErr(makeBucketWithVersion, err))
@@ -1620,6 +1620,7 @@ func (c *SiteReplicationSys) PeerBucketMetadataUpdateHandler(ctx context.Context
 			return wrapSRErr(err)
 		}
 	}
+	notifyCtx := ctx
 	ctx, unlock, err := lockBucketMetadata(ctx, objectAPI, item.Bucket)
 	if err != nil {
 		return wrapSRErr(err)
@@ -1703,7 +1704,7 @@ func (c *SiteReplicationSys) PeerBucketMetadataUpdateHandler(ctx context.Context
 	}
 	unlock()
 	locked = false
-	globalNotificationSys.LoadBucketMetadata(bgContext(ctx), item.Bucket)
+	globalNotificationSys.LoadBucketMetadata(bgContext(notifyCtx), item.Bucket)
 	return nil
 }
 
@@ -1981,6 +1982,7 @@ func applyBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket 
 		return time.Time{}, err
 	}
 
+	notifyCtx := ctx
 	ctx, unlock, err := lockBucketMetadata(ctx, objectAPI, bucket)
 	if err != nil {
 		return time.Time{}, err
@@ -2033,7 +2035,7 @@ func applyBucketCORSMetadata(ctx context.Context, objectAPI ObjectLayer, bucket 
 	}
 	unlock()
 	locked = false
-	globalNotificationSys.LoadBucketMetadata(bgContext(ctx), bucket)
+	globalNotificationSys.LoadBucketMetadata(bgContext(notifyCtx), bucket)
 	return updatedAt, nil
 }
 
