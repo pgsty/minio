@@ -882,23 +882,54 @@ func (z *erasureServerPools) MakeBucket(ctx context.Context, bucket string, opts
 		return err
 	}
 
-	// If it doesn't exist we get a new, so ignore errors
-	meta := newBucketMetadata(bucket)
-	meta.SetCreatedAt(opts.CreatedAt)
-	if opts.LockEnabled {
-		meta.VersioningConfigXML = enabledBucketVersioningConfig
-		meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
+	if isMinioMetaBucketName(bucket) {
+		meta := newBucketMetadata(bucket)
+		meta.SetCreatedAt(opts.CreatedAt)
+		if err := meta.Save(context.Background(), z); err != nil {
+			return toObjectErr(err, bucket)
+		}
+		globalBucketMetadataSys.Set(bucket, meta)
+		return nil
 	}
 
-	if opts.VersioningEnabled {
-		meta.VersioningConfigXML = enabledBucketVersioningConfig
-	}
-
-	if err := meta.Save(context.Background(), z); err != nil {
+	ctx, unlock, err := lockBucketMetadata(ctx, z, bucket)
+	if err != nil {
 		return toObjectErr(err, bucket)
 	}
-
-	globalBucketMetadataSys.Set(bucket, meta)
+	err = func() error {
+		defer unlock()
+		meta, err := readBucketMetadata(ctx, z, bucket)
+		if errors.Is(err, errConfigNotFound) {
+			meta = newBucketMetadata(bucket)
+		} else if err != nil {
+			return err
+		}
+		if meta.Created.IsZero() {
+			meta.SetCreatedAt(opts.CreatedAt)
+		}
+		if opts.LockEnabled {
+			if len(meta.VersioningConfigXML) == 0 {
+				meta.VersioningConfigXML = enabledBucketVersioningConfig
+				meta.VersioningConfigUpdatedAt = meta.Created
+			}
+			if len(meta.ObjectLockConfigXML) == 0 {
+				meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
+				meta.ObjectLockConfigUpdatedAt = meta.Created
+			}
+		}
+		if opts.VersioningEnabled && len(meta.VersioningConfigXML) == 0 {
+			meta.VersioningConfigXML = enabledBucketVersioningConfig
+			meta.VersioningConfigUpdatedAt = meta.Created
+		}
+		if err = meta.Save(ctx, z); err != nil {
+			return err
+		}
+		globalBucketMetadataSys.Set(bucket, meta)
+		return nil
+	}()
+	if err != nil {
+		return toObjectErr(err, bucket)
+	}
 
 	// Success.
 	return nil

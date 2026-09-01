@@ -930,34 +930,33 @@ func (c *SiteReplicationSys) PeerBucketMakeWithVersioningHandler(ctx context.Con
 		if !ok1 && !ok2 {
 			return wrapSRErr(c.annotateErr(makeBucketWithVersion, err))
 		}
-	} else {
-		// Load updated bucket metadata into memory as new
-		// bucket was created.
-		globalNotificationSys.LoadBucketMetadata(GlobalContext, bucket)
 	}
-
-	meta, err := globalBucketMetadataSys.Get(bucket)
+	ctx, unlock, err := lockBucketMetadata(ctx, objAPI, bucket)
 	if err != nil {
 		return wrapSRErr(c.annotateErr(makeBucketWithVersion, err))
 	}
-
-	meta.SetCreatedAt(opts.CreatedAt)
-
-	if err := enablePeerBucketVersioning(&meta); err != nil {
-		return wrapSRErr(err)
-	}
-	if opts.LockEnabled && len(meta.ObjectLockConfigXML) == 0 {
-		meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
-		if meta.ObjectLockConfigUpdatedAt.IsZero() {
-			meta.ObjectLockConfigUpdatedAt = meta.Created
+	err = func() error {
+		defer unlock()
+		meta, err := loadBucketMetadataParse(ctx, objAPI, bucket, true)
+		if err != nil {
+			return err
 		}
-	}
+		meta.SetCreatedAt(opts.CreatedAt)
 
-	if err := meta.Save(context.Background(), objAPI); err != nil {
-		return wrapSRErr(err)
+		if err = enablePeerBucketVersioning(&meta); err != nil {
+			return err
+		}
+		if opts.LockEnabled && len(meta.ObjectLockConfigXML) == 0 {
+			meta.ObjectLockConfigXML = enabledBucketObjectLockConfig
+			if meta.ObjectLockConfigUpdatedAt.IsZero() {
+				meta.ObjectLockConfigUpdatedAt = meta.Created
+			}
+		}
+		return globalBucketMetadataSys.saveMetadata(ctx, objAPI, meta)
+	}()
+	if err != nil {
+		return wrapSRErr(c.annotateErr(makeBucketWithVersion, err))
 	}
-
-	globalBucketMetadataSys.Set(bucket, meta)
 
 	// Load updated bucket metadata into memory as new metadata updated.
 	globalNotificationSys.LoadBucketMetadata(GlobalContext, bucket)
