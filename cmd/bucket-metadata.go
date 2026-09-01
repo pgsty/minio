@@ -306,8 +306,10 @@ func loadBucketMetadataParseUnderLock(ctx context.Context, objectAPI ObjectLayer
 	return loadBucketMetadataParse(ctx, objectAPI, bucket, parse)
 }
 
-var bucketMetadataMigrationTimeout = newDynamicTimeout(5*time.Second, time.Second)
-var errBucketMetadataMigrationLockUnavailable = errors.New("bucket metadata migration lock unavailable")
+var (
+	bucketMetadataMigrationTimeout            = newDynamicTimeout(5*time.Second, time.Second)
+	errBucketMetadataMigrationLockUnavailable = errors.New("bucket metadata migration lock unavailable")
+)
 
 // loadBucketMetadata loads and migrates to bucket metadata.
 func loadBucketMetadata(ctx context.Context, objectAPI ObjectLayer, bucket string) (BucketMetadata, error) {
