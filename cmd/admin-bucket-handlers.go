@@ -1031,34 +1031,56 @@ func (a adminAPIHandlers) ImportBucketMetadataHandler(w http.ResponseWriter, r *
 		if len(fields) == 0 {
 			continue
 		}
-		lockCtx, unlock, err := lockBucketMetadata(ctx, objectAPI, bucket)
-		if err != nil {
-			rpt.SetStatus(bucket, "", err)
-			continue
-		}
-		merged, err := loadBucketMetadataParse(lockCtx, objectAPI, bucket, true)
-		if err == nil {
+		var merged BucketMetadata
+		err := func() error {
+			lockCtx, unlock, err := lockBucketMetadata(ctx, objectAPI, bucket)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			merged, err = loadBucketMetadataParse(lockCtx, objectAPI, bucket, true)
+			if err != nil {
+				return err
+			}
 			applyImportedBucketMetadata(&merged, *meta, fields)
-			err = globalBucketMetadataSys.saveMetadata(lockCtx, objectAPI, merged)
-		}
-		unlock()
+			return globalBucketMetadataSys.saveMetadata(lockCtx, objectAPI, merged)
+		}()
 		if err != nil {
 			rpt.SetStatus(bucket, "", err)
 			continue
 		}
 		*meta = merged
 		globalNotificationSys.LoadBucketMetadata(bgContext(ctx), bucket)
-		// Call site replication hook.
-		if err = globalSiteReplicationSys.BucketMetaHook(ctx, madmin.SRBucketMeta{
-			Bucket:           bucket,
-			Quota:            meta.QuotaConfigJSON,
-			Policy:           meta.PolicyConfigJSON,
-			Versioning:       enc(meta.VersioningConfigXML),
-			Tags:             enc(meta.TaggingConfigXML),
-			ObjectLockConfig: enc(meta.ObjectLockConfigXML),
-			SSEConfig:        enc(meta.EncryptionConfigXML),
-			UpdatedAt:        updatedAt,
-		}); err != nil {
+		hook := madmin.SRBucketMeta{Bucket: bucket, UpdatedAt: updatedAt}
+		var hookNeeded bool
+		if _, ok := fields[bucketQuotaConfigFile]; ok {
+			hook.Quota = meta.QuotaConfigJSON
+			hookNeeded = true
+		}
+		if _, ok := fields[bucketPolicyConfig]; ok {
+			hook.Policy = meta.PolicyConfigJSON
+			hookNeeded = true
+		}
+		if _, ok := fields[bucketVersioningConfig]; ok {
+			hook.Versioning = enc(meta.VersioningConfigXML)
+			hookNeeded = true
+		}
+		if _, ok := fields[bucketTaggingConfig]; ok {
+			hook.Tags = enc(meta.TaggingConfigXML)
+			hookNeeded = true
+		}
+		if _, ok := fields[objectLockConfig]; ok {
+			hook.ObjectLockConfig = enc(meta.ObjectLockConfigXML)
+			hookNeeded = true
+		}
+		if _, ok := fields[bucketSSEConfig]; ok {
+			hook.SSEConfig = enc(meta.EncryptionConfigXML)
+			hookNeeded = true
+		}
+		if hookNeeded {
+			err = globalSiteReplicationSys.BucketMetaHook(ctx, hook)
+		}
+		if err != nil {
 			rpt.SetStatus(bucket, "", err)
 			continue
 		}
