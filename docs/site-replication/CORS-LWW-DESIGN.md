@@ -41,9 +41,9 @@ The following are deliberately out of scope:
 
 - redesigning the replication semantics of policy, tags, SSE, quota,
   versioning, or Object Lock;
-- eliminating lost updates between different bucket-metadata types that all
-  rewrite `.metadata.bin`; this inherited problem is tracked by
-  [pgsty/silo#77](https://github.com/pgsty/silo/issues/77);
+- changing higher-level lifecycle merge semantics or serializing bucket
+  deletion against in-flight metadata updates; those follow-ups remain under
+  [pgsty/silo#102](https://github.com/pgsty/silo/issues/102);
 - mixed-version support that permits CORS writes before every site runs a
   CORS-aware binary;
 - public downgrade, rollback, and global-fallback documentation;
@@ -266,35 +266,35 @@ otherwise:
 ```
 
 The admin handler's legacy/default bulk metadata path can also carry a non-nil
-CORS field. It therefore takes the same CORS lock, applies strict decoding and
-validation, and uses the same state comparison before saving. A nil CORS field
-in that untyped legacy shape means "not included" and cannot represent a
-tombstone; current producers use the typed CORS event for deletion.
+CORS field. It therefore takes the shared metadata lock, applies strict
+decoding and validation, and uses the same state comparison before saving. A
+nil CORS field in that untyped legacy shape means "not included" and cannot
+represent a tombstone; current producers use the typed CORS event for deletion.
 
 ## Concurrency and Locking
 
 The transition lock is:
 
 ```text
-.minio.sys / buckets/<bucket>/cors-config.lock
+.minio.sys / buckets/<bucket>/metadata.lock
 ```
 
 It is a virtual distributed namespace lock. The name deliberately differs from
 the real `buckets/<bucket>/.metadata.bin` object because the metadata save path
 locks that object internally and namespace locks are not re-entrant.
 
-The lock serializes every intentional current-version local, typed-peer,
-legacy-bulk, and local-heal CORS transition across nodes of one cluster. It
-cannot prevent an unrelated whole-record writer from restoring stale CORS
-columns. Residual paths include another metadata type's `Update`/`Delete`, a
-legacy bulk item whose nil CORS field means "not included",
-`ImportBucketMetadata`, and bucket-make metadata rewriting. Their inherited
-whole-record behavior is the separate architectural problem under issue #77.
+The lock serializes CORS transitions with ordinary `Update`/`Delete`, legacy
+bulk metadata, imports, bucket creation/adoption, and metadata migrations.
+Every whole-record writer reads the latest disk state while holding the same
+lock, so a writer for another configuration type cannot restore stale CORS
+columns. Per-type validation, timestamp, and deletion semantics remain
+independent.
 
 No cross-site admin call or `BucketMetaHook` dispatch is made while holding the
-CORS lock. The metadata save can perform blocking intra-cluster notification
-fan-out before the lock is released. Local handlers release the lock before
-cross-site dispatch; reordered network delivery is handled by the total-order
+metadata lock. The local disk save and resident-cache update complete under the
+lock; intra-cluster metadata reload fan-out happens only after release. This
+avoids a peer reload that needs migration from waiting on a lock held by the
+notifying node. Reordered cross-site delivery is handled by the total-order
 join.
 
 ## Dispatch and Retry
@@ -441,11 +441,12 @@ false tombstone source.
 Rejected. The save path takes the same namespace lock internally; reusing it
 would self-deadlock.
 
-### Redesign every bucket metadata type together
+### Give every metadata type a new state machine
 
-Rejected for issue #75. Neighboring metadata types have related inherited
-patterns but different delete, validation, and compatibility semantics. They
-require focused reproductions under issue #77.
+Rejected. The shared lock prevents whole-record lost updates without changing
+the independent replication, validation, or deletion semantics of policy,
+tags, SSE, quota, versioning, and Object Lock. Those semantic audits remain
+separate from the persistence fix in issue #102.
 
 ## Invariants
 
@@ -455,9 +456,9 @@ The implementation is acceptable only while all of these invariants hold:
 2. Nil payload plus non-zero timestamp is a durable tombstone.
 3. A live payload has canonical base64 on the wire, valid CORS XML, and a
    non-zero source timestamp.
-4. Every intentional current-version CORS state transition is serialized by
-   the CORS namespace lock from disk read through state comparison and save;
-   unrelated whole-record overwrite risk remains explicitly under issue #77.
+4. Every intentional current-version CORS state transition and every other
+   whole-record metadata writer is serialized by `metadata.lock` from the
+   authoritative disk read through save and local cache publication.
 5. Peer apply and heal never replace local state with a lower or equal state.
 6. Local PUT and DELETE create a state strictly greater than the state observed
    under the lock.
@@ -542,10 +543,10 @@ gap. The selected C-prime model incorporated the valid findings while rejecting
 the suggestion to rewrite normal source timestamps.
 
 The second review found no P0. Its `GO WITH FIXES` findings were peer semantic
-validation, the legacy/default admin mutation path bypassing the CORS lock and
-join, CreatedAt-floor observability, and missing tests for invalid XML, lineage,
-and concurrent local transitions. Those required changes and tests are now in
-the working tree.
+validation, the legacy/default admin mutation path bypassing the then-current
+CORS lock and join, CreatedAt-floor observability, and missing tests for
+invalid XML, lineage, and concurrent local transitions. Those required changes
+and tests are now in the working tree.
 
 The final review examined this design and the exact dirty diff, independently
 reran build, vet, lint, normal tests, and race tests, and found no P0 or P1.
