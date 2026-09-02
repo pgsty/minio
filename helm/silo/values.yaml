@@ -15,18 +15,17 @@ clusterDomain: cluster.local
 ##
 image:
   repository: pgsty/silo
-  tag: RELEASE.2026-08-06T00-00-00Z
+  tag: RELEASE.2026-09-03T00-00-00Z
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 # - name: "image-pull-secret"
 
-## Image used by post-install jobs. The pgsty/silo image bundles mcli and
-## provides /usr/bin/mc as a compatibility link.
+## Silo client image used by post-install jobs.
 ##
 mcImage:
-  repository: pgsty/silo
-  tag: RELEASE.2026-08-06T00-00-00Z
+  repository: pgsty/mc
+  tag: RELEASE.2026-09-01T00-00-00Z
   pullPolicy: IfNotPresent
 
 ## Silo mode, i.e. standalone or distributed.

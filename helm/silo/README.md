@@ -61,6 +61,7 @@ names. Export the complete values and render the candidate chart offline:
 ```bash
 helm get values my-release -n my-namespace -a > values.before-silo.yaml
 SILO_TAG='<published-silo-release-tag>'
+MCLI_TAG='<published-mcli-release-tag>'
 
 helm template my-release ./helm/silo \
   -n my-namespace \
@@ -69,9 +70,9 @@ helm template my-release ./helm/silo \
   --set fullnameOverride=my-existing-fullname \
   --set serviceAccount.name=minio-sa \
   --set image.repository=pgsty/silo \
-  --set mcImage.repository=pgsty/silo \
+  --set mcImage.repository=pgsty/mc \
   --set-string image.tag="${SILO_TAG}" \
-  --set-string mcImage.tag="${SILO_TAG}" \
+  --set-string mcImage.tag="${MCLI_TAG}" \
   > rendered.silo.yaml
 ```
 
@@ -81,6 +82,7 @@ mounts. After review, upgrade the chart and image together:
 
 ```bash
 SILO_TAG='<published-silo-release-tag>'
+MCLI_TAG='<published-mcli-release-tag>'
 helm upgrade my-release ./helm/silo \
   -n my-namespace \
   -f values.before-silo.yaml \
@@ -88,9 +90,9 @@ helm upgrade my-release ./helm/silo \
   --set fullnameOverride=my-existing-fullname \
   --set serviceAccount.name=minio-sa \
   --set image.repository=pgsty/silo \
-  --set mcImage.repository=pgsty/silo \
+  --set mcImage.repository=pgsty/mc \
   --set-string image.tag="${SILO_TAG}" \
-  --set-string mcImage.tag="${SILO_TAG}"
+  --set-string mcImage.tag="${MCLI_TAG}"
 ```
 
 Rollback is chart-level: use `helm rollback`, not an image-only downgrade. The

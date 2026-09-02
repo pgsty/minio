@@ -113,7 +113,7 @@ helm_run template my-release "${new_chart}" \
 go run ./buildscripts/helm-migration-guard "${old_render}" "${new_render}"
 
 helm_run package "${new_chart}" --destination "${output_dir}" >/dev/null
-test -s "${work_dir}/silo-7.0.1.tgz"
+test -s "${work_dir}/silo-7.0.2.tgz"
 if find "${work_dir}" -maxdepth 1 -type f -name 'minio-*.tgz' | grep -q .; then
 	echo "Helm packaging emitted a legacy MinIO chart name" >&2
 	exit 1
