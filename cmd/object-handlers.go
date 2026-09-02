@@ -1515,17 +1515,6 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	canRotateKeyInPlace := !srcInfo.Legacy &&
 		!copyRewritesObjectData(srcInfo.metadataOnly, copySrcOpts, dstOpts)
 
-	// The rotation shortcut authenticates the source key by unsealing it. The
-	// re-encrypting fallback authenticates it only through the source decryptor,
-	// which GetObjectNInfo skips for a zero byte object, so check it here before
-	// the destination is written under the new key.
-	if cpSrcDstSame && sseCopyC && sseC && !chStorageClass && !canRotateKeyInPlace {
-		if err := checkSSECCopySourceKey(r.Header, srcInfo.UserDefined, srcBucket, srcObject, newKey); err != nil {
-			writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
-			return
-		}
-	}
-
 	// If src == dst and either
 	// - the object is encrypted using SSE-C and two different SSE-C keys are present
 	// - the object is encrypted using SSE-S3 and the SSE-S3 header is present

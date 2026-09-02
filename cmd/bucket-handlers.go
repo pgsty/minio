@@ -509,10 +509,6 @@ func (api objectAPIHandlers) DeleteMultipleObjectsHandler(w http.ResponseWriter,
 		reqInfo.ObjectName = object.ObjectName
 		reqInfo.VersionID = object.VersionID
 		if apiErrCode := authorizeRequest(ctx, r, deleteObjectAction(object.VersionID)); apiErrCode != ErrNone {
-			if apiErrCode == ErrSignatureDoesNotMatch || apiErrCode == ErrInvalidAccessKeyID {
-				writeErrorResponse(ctx, w, errorCodes.ToAPIErr(apiErrCode), r.URL)
-				return
-			}
 			apiErr := errorCodes.ToAPIErr(apiErrCode)
 			deleteResults[index].errInfo = DeleteError{
 				Code:      apiErr.Code,
