@@ -911,7 +911,7 @@ func (z *erasureServerPools) MakeBucket(ctx context.Context, bucket string, opts
 			meta.SetCreatedAt(opts.CreatedAt)
 		}
 		if opts.LockEnabled {
-			if err := enablePeerBucketVersioning(&meta); err != nil {
+			if err := enablePeerBucketVersioning(&meta, true); err != nil {
 				return err
 			}
 			if len(meta.ObjectLockConfigXML) == 0 {
@@ -920,7 +920,7 @@ func (z *erasureServerPools) MakeBucket(ctx context.Context, bucket string, opts
 			}
 		}
 		if opts.VersioningEnabled {
-			if err := enablePeerBucketVersioning(&meta); err != nil {
+			if err := enablePeerBucketVersioning(&meta, opts.LockEnabled); err != nil {
 				return err
 			}
 		}

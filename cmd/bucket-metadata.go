@@ -378,8 +378,10 @@ func (b *BucketMetadata) parseAllConfigs(ctx context.Context, objectAPI ObjectLa
 	}
 
 	if bytes.Equal(b.ObjectLockConfigXML, enabledBucketObjectLockConfig) {
+		// A locked bucket needs plain Enabled versioning; suspended or
+		// prefix-excluded configurations are not honored for it.
 		config, versioningErr := versioning.ParseConfig(bytes.NewReader(b.VersioningConfigXML))
-		if versioningErr != nil || !config.Enabled() {
+		if versioningErr != nil || !config.Enabled() || config.PrefixesExcluded() {
 			b.VersioningConfigXML = enabledBucketVersioningConfig
 		}
 	}
