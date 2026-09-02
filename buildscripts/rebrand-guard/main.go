@@ -30,7 +30,7 @@ import (
 	"strings"
 )
 
-const manifestVersion = 3
+const manifestVersion = 4
 
 var (
 	minioImportRE = regexp.MustCompile(`github\.com/minio/[A-Za-z0-9_./-]+`)
@@ -44,19 +44,18 @@ var (
 )
 
 type manifest struct {
-	Version         int      `json:"version"`
-	ModulePath      string   `json:"module_path"`
-	MinioImports    []string `json:"minio_imports"`
-	Environment     []string `json:"environment"`
-	Metrics         []string `json:"metrics"`
-	Headers         []string `json:"headers"`
-	Routes          []string `json:"routes"`
-	RouteRoots      []string `json:"route_roots"`
-	GridRoutes      []string `json:"grid_routes"`
-	StorageMarkers  []string `json:"storage_markers"`
-	PolicyValues    []string `json:"policy_values"`
-	ExportedSymbols []string `json:"exported_symbols"`
-	BrandAllowlist  []string `json:"brand_allowlist"`
+	Version        int      `json:"version"`
+	ModulePath     string   `json:"module_path"`
+	MinioImports   []string `json:"minio_imports"`
+	Environment    []string `json:"environment"`
+	Metrics        []string `json:"metrics"`
+	Headers        []string `json:"headers"`
+	Routes         []string `json:"routes"`
+	RouteRoots     []string `json:"route_roots"`
+	GridRoutes     []string `json:"grid_routes"`
+	StorageMarkers []string `json:"storage_markers"`
+	PolicyValues   []string `json:"policy_values"`
+	BrandAllowlist []string `json:"brand_allowlist"`
 }
 
 func main() {
@@ -101,17 +100,16 @@ func collect(repo string) (manifest, error) {
 	}
 
 	sets := map[string]map[string]struct{}{
-		"imports":  {},
-		"env":      {},
-		"metrics":  {},
-		"headers":  {},
-		"routes":   {},
-		"roots":    {},
-		"grid":     {},
-		"storage":  {},
-		"policy":   {},
-		"exported": {},
-		"brand":    {},
+		"imports": {},
+		"env":     {},
+		"metrics": {},
+		"headers": {},
+		"routes":  {},
+		"roots":   {},
+		"grid":    {},
+		"storage": {},
+		"policy":  {},
+		"brand":   {},
 	}
 	modulePath := ""
 	fset := token.NewFileSet()
@@ -163,16 +161,16 @@ func collect(repo string) (manifest, error) {
 					sets["imports"][value] = struct{}{}
 				}
 			}
-			collectStringMatches(sets["routes"], routeRE, file)
-			collectNamedStringValues(sets["roots"], rel, file, "minioReservedBucket")
-			if rel == "internal/grid/manager.go" {
-				collectStringMatches(sets["grid"], routeRE, file)
-			}
 			if !strings.HasSuffix(rel, "_test.go") {
-				collectExported(sets["exported"], filepath.ToSlash(filepath.Dir(rel)), file)
+				// Test files hold request paths for fixtures, not served routes.
+				collectStringMatches(sets["routes"], routeRE, file)
 				if strings.HasPrefix(rel, "cmd/") || strings.HasPrefix(rel, "internal/") {
 					collectBrandStrings(sets["brand"], rel, file)
 				}
+			}
+			collectNamedStringValues(sets["roots"], rel, file, "minioReservedBucket")
+			if rel == "internal/grid/manager.go" {
+				collectStringMatches(sets["grid"], routeRE, file)
 			}
 		}
 	}
@@ -184,19 +182,18 @@ func collect(repo string) (manifest, error) {
 		return manifest{}, errors.New("go.mod module path was not found")
 	}
 	return manifest{
-		Version:         manifestVersion,
-		ModulePath:      modulePath,
-		MinioImports:    sorted(sets["imports"]),
-		Environment:     sorted(sets["env"]),
-		Metrics:         sorted(sets["metrics"]),
-		Headers:         sorted(sets["headers"]),
-		Routes:          sorted(sets["routes"]),
-		RouteRoots:      sorted(sets["roots"]),
-		GridRoutes:      sorted(sets["grid"]),
-		StorageMarkers:  sorted(sets["storage"]),
-		PolicyValues:    sorted(sets["policy"]),
-		ExportedSymbols: sorted(sets["exported"]),
-		BrandAllowlist:  sorted(sets["brand"]),
+		Version:        manifestVersion,
+		ModulePath:     modulePath,
+		MinioImports:   sorted(sets["imports"]),
+		Environment:    sorted(sets["env"]),
+		Metrics:        sorted(sets["metrics"]),
+		Headers:        sorted(sets["headers"]),
+		Routes:         sorted(sets["routes"]),
+		RouteRoots:     sorted(sets["roots"]),
+		GridRoutes:     sorted(sets["grid"]),
+		StorageMarkers: sorted(sets["storage"]),
+		PolicyValues:   sorted(sets["policy"]),
+		BrandAllowlist: sorted(sets["brand"]),
 	}, nil
 }
 
@@ -262,7 +259,7 @@ func collectStringMatches(dst map[string]struct{}, re *regexp.Regexp, file *ast.
 }
 
 func trackedFiles(repo string) ([]string, error) {
-	cmd := exec.Command("git", "-C", repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	cmd := exec.Command("git", "-C", repo, "ls-files", "--cached", "-z")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
@@ -283,78 +280,6 @@ func addMatches(dst map[string]struct{}, re *regexp.Regexp, text string, lower b
 			match = strings.ToLower(match)
 		}
 		dst[match] = struct{}{}
-	}
-}
-
-func collectExported(dst map[string]struct{}, dir string, file *ast.File) {
-	prefix := dir + ":" + file.Name.Name + ":"
-	for _, decl := range file.Decls {
-		switch decl := decl.(type) {
-		case *ast.FuncDecl:
-			if !ast.IsExported(decl.Name.Name) {
-				continue
-			}
-			if decl.Recv == nil {
-				dst[prefix+"func:"+decl.Name.Name] = struct{}{}
-				continue
-			}
-			receiver := receiverName(decl.Recv.List[0].Type)
-			dst[prefix+"method:"+receiver+"."+decl.Name.Name] = struct{}{}
-		case *ast.GenDecl:
-			for _, spec := range decl.Specs {
-				switch spec := spec.(type) {
-				case *ast.TypeSpec:
-					if !ast.IsExported(spec.Name.Name) {
-						continue
-					}
-					dst[prefix+"type:"+spec.Name.Name] = struct{}{}
-					collectExportedFields(dst, prefix, spec.Name.Name, spec.Type)
-				case *ast.ValueSpec:
-					kind := strings.ToLower(decl.Tok.String())
-					for _, name := range spec.Names {
-						if ast.IsExported(name.Name) {
-							dst[prefix+kind+":"+name.Name] = struct{}{}
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func collectExportedFields(dst map[string]struct{}, prefix, typeName string, expr ast.Expr) {
-	var fields *ast.FieldList
-	switch typed := expr.(type) {
-	case *ast.StructType:
-		fields = typed.Fields
-	case *ast.InterfaceType:
-		fields = typed.Methods
-	default:
-		return
-	}
-	for _, field := range fields.List {
-		for _, name := range field.Names {
-			if ast.IsExported(name.Name) {
-				dst[prefix+"field:"+typeName+"."+name.Name] = struct{}{}
-			}
-		}
-	}
-}
-
-func receiverName(expr ast.Expr) string {
-	switch expr := expr.(type) {
-	case *ast.Ident:
-		return expr.Name
-	case *ast.StarExpr:
-		return receiverName(expr.X)
-	case *ast.IndexExpr:
-		return receiverName(expr.X)
-	case *ast.IndexListExpr:
-		return receiverName(expr.X)
-	case *ast.SelectorExpr:
-		return receiverName(expr.X) + "." + expr.Sel.Name
-	default:
-		return fmt.Sprintf("%T", expr)
 	}
 }
 
@@ -409,7 +334,6 @@ func compare(want, got manifest) error {
 		{"grid_routes", want.GridRoutes, got.GridRoutes},
 		{"storage_markers", want.StorageMarkers, got.StorageMarkers},
 		{"policy_values", want.PolicyValues, got.PolicyValues},
-		{"exported_symbols", want.ExportedSymbols, got.ExportedSymbols},
 		{"brand_allowlist", want.BrandAllowlist, got.BrandAllowlist},
 	}
 	for _, check := range checks {
@@ -454,10 +378,10 @@ func setDiff(want, got []string) (missing, added []string) {
 }
 
 func printSummary(value manifest) {
-	fmt.Printf("compatibility manifest: imports=%d env=%d metrics=%d headers=%d routes=%d roots=%d grid=%d storage=%d policy=%d exported=%d brand=%d sha256=%s\n",
+	fmt.Printf("compatibility manifest: imports=%d env=%d metrics=%d headers=%d routes=%d roots=%d grid=%d storage=%d policy=%d brand=%d sha256=%s\n",
 		len(value.MinioImports), len(value.Environment), len(value.Metrics), len(value.Headers),
 		len(value.Routes), len(value.RouteRoots), len(value.GridRoutes), len(value.StorageMarkers), len(value.PolicyValues),
-		len(value.ExportedSymbols), len(value.BrandAllowlist), manifestDigest(value))
+		len(value.BrandAllowlist), manifestDigest(value))
 }
 
 func manifestDigest(value manifest) string {

@@ -44,6 +44,10 @@ Before opening a pull request:
 
 - Add or update tests for changed behavior.
 - Run `make verifiers`.
+- If `make rebrand-guard` reports a changed compatibility set, review the
+  listed identifiers; when the change is intended, refresh the baseline with
+  `go run ./buildscripts/rebrand-guard --write` and commit
+  `buildscripts/rebrand-guard/compat-baseline.json`.
 - Run the smallest relevant package tests, then `make test` when practical.
 - Run `make build` and confirm the generated executable is `silo`.
 - Explain any preserved `MINIO_*`, `minio_*`, `x-minio-*`, `/minio/*`,
