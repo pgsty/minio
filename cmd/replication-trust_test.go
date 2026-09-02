@@ -884,3 +884,67 @@ func testAPIStreamingTrailerWithUntrustedReplicationHeaders(obj ObjectLayer, ins
 		t.Fatalf("%s: uploaded parts %+v, want one part of %d bytes", instanceType, parts.Parts, len(payload))
 	}
 }
+
+// TestAPICopyObjectReplicaLegalHoldTimestamp verifies that a replicated legal
+// hold update records its own timestamp under the legal-hold key: a replica
+// that arrives later with an older timestamp must not change the hold, the
+// retention timestamp must stay untouched, and a newer replica still applies.
+func TestAPICopyObjectReplicaLegalHoldTimestamp(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testAPICopyObjectReplicaLegalHoldTimestamp,
+		makeBucketOptions: MakeBucketOptions{LockEnabled: true},
+	})
+}
+
+func testAPICopyObjectReplicaLegalHoldTimestamp(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	object := "replication-trust/legal-hold"
+	if _, err := obj.PutObject(t.Context(), bucketName, object, mustGetPutObjReader(t, bytes.NewReader([]byte("held")), 4, "", ""), ObjectOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	replicator := newObjectAttributesAuthzUser(t, instanceType, bucketName,
+		`"s3:GetObject","s3:PutObject","s3:ReplicateObject","s3:PutObjectLegalHold","s3:GetObjectLegalHold","s3:GetObjectRetention"`)
+	apply := func(status, stamp string) {
+		t.Helper()
+		headers := map[string]string{
+			xhttp.AmzCopySource:                       url.QueryEscape(SlashSeparator + bucketName + SlashSeparator + object),
+			xhttp.AmzMetadataDirective:                replaceDirective,
+			xhttp.MinIOSourceReplicationRequest:       "true",
+			xhttp.AmzBucketReplicationStatus:          "REPLICA",
+			xhttp.AmzObjectLockLegalHold:              status,
+			xhttp.MinIOSourceObjectLegalHoldTimestamp: stamp,
+		}
+		req, err := newTestSignedRequestV4(http.MethodPut, getCopyObjectURL("", bucketName, object), 0, nil,
+			replicator.AccessKey, replicator.SecretKey, headers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: replica CopyObject legal hold %s @ %s: status %d: %s", instanceType, status, stamp, rec.Code, rec.Body.String())
+		}
+	}
+	state := func() (hold, holdStamp string, hasRetentionStamp bool) {
+		t.Helper()
+		info, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, hasRetentionStamp = info.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]
+		return info.UserDefined[strings.ToLower(xhttp.AmzObjectLockLegalHold)], info.UserDefined[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp], hasRetentionStamp
+	}
+
+	apply("ON", "2026-09-03T10:00:00Z")
+	apply("OFF", "2026-09-03T09:00:00Z") // stale replica: must be ignored
+	if hold, stamp, retention := state(); hold != "ON" || stamp != "2026-09-03T10:00:00Z" || retention {
+		t.Fatalf("%s: after stale OFF: hold=%q legal-hold timestamp=%q retention timestamp present=%v", instanceType, hold, stamp, retention)
+	}
+	apply("OFF", "2026-09-03T11:00:00Z") // newer replica: applies
+	if hold, stamp, retention := state(); hold != "OFF" || stamp != "2026-09-03T11:00:00Z" || retention {
+		t.Fatalf("%s: after newer OFF: hold=%q legal-hold timestamp=%q retention timestamp present=%v", instanceType, hold, stamp, retention)
+	}
+}

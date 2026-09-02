@@ -1664,6 +1664,12 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 
 	srcInfo.PutObjReader = pReader
 
+	// Object Lock state as stored on disk, captured before the metadata
+	// directive rebuilds the map. A replica update is applied only when its
+	// source timestamp is newer than the stored one, and a stale update must
+	// leave the stored state in place instead of erasing it.
+	storedLock := storedObjectLockState(srcInfo.UserDefined)
+
 	srcInfo.UserDefined, err = getCpObjMetadataFromHeader(ctx, r, srcInfo.UserDefined, allowReplicationMetadata)
 	if err != nil {
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
@@ -1707,17 +1713,14 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	// apply default bucket configuration/governance headers for dest side.
 	retentionMode, retentionDate, legalHold, s3Err := checkPutObjectLockAllowed(ctx, r, dstBucket, dstObject, getObjectInfo, retPerms, holdPerms, replicaTrusted)
 	if s3Err == ErrNone && retentionMode.Valid() {
-		lastretentionTimestamp := srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]
 		if dstOpts.ReplicationRequest {
 			srcTimestamp := dstOpts.ReplicationSourceRetentionTimestamp
-			if !srcTimestamp.IsZero() {
-				ondiskTimestamp, err := time.Parse(time.RFC3339Nano, lastretentionTimestamp)
-				// update retention metadata only if replica  timestamp is newer than what's on disk
-				if err != nil || (err == nil && ondiskTimestamp.Before(srcTimestamp)) {
-					srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
-					srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
-					srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = srcTimestamp.UTC().Format(time.RFC3339Nano)
-				}
+			if storedLock.retentionIsOlderThan(srcTimestamp) {
+				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
+				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
+				srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = srcTimestamp.UTC().Format(time.RFC3339Nano)
+			} else {
+				storedLock.restoreRetention(srcInfo.UserDefined)
 			}
 		} else {
 			srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
@@ -1727,19 +1730,17 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	if s3Err == ErrNone && legalHold.Status.Valid() {
-		lastLegalHoldTimestamp := srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp]
 		if dstOpts.ReplicationRequest {
 			srcTimestamp := dstOpts.ReplicationSourceLegalholdTimestamp
-			if !srcTimestamp.IsZero() {
-				ondiskTimestamp, err := time.Parse(time.RFC3339Nano, lastLegalHoldTimestamp)
-				// update legalhold metadata only if replica timestamp is newer than what's on disk
-				if err != nil || (err == nil && ondiskTimestamp.Before(srcTimestamp)) {
-					srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
-					srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = srcTimestamp.Format(time.RFC3339Nano)
-				}
+			if storedLock.legalHoldIsOlderThan(srcTimestamp) {
+				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
+				srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp] = srcTimestamp.UTC().Format(time.RFC3339Nano)
+			} else {
+				storedLock.restoreLegalHold(srcInfo.UserDefined)
 			}
 		} else {
 			srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
+			srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp] = UTCNow().Format(time.RFC3339Nano)
 		}
 	}
 	if s3Err != ErrNone {

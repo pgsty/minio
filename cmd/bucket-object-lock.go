@@ -22,9 +22,12 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/minio/minio/internal/auth"
 	objectlock "github.com/minio/minio/internal/bucket/object/lock"
+	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/pkg/v3/policy"
 )
@@ -342,4 +345,63 @@ func checkPutObjectLockAllowed(ctx context.Context, rq *http.Request, bucket, ob
 // NewBucketObjectLockSys returns initialized BucketObjectLockSys
 func NewBucketObjectLockSys() *BucketObjectLockSys {
 	return &BucketObjectLockSys{}
+}
+
+// objectLockState is the Object Lock metadata of a stored object version
+// together with the replication timestamps that order updates to it.
+type objectLockState struct {
+	mode, retainUntil, retentionTimestamp string
+	legalHold, legalHoldTimestamp         string
+}
+
+func storedObjectLockState(metadata map[string]string) objectLockState {
+	return objectLockState{
+		mode:               metadata[strings.ToLower(xhttp.AmzObjectLockMode)],
+		retainUntil:        metadata[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)],
+		retentionTimestamp: metadata[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp],
+		legalHold:          metadata[strings.ToLower(xhttp.AmzObjectLockLegalHold)],
+		legalHoldTimestamp: metadata[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp],
+	}
+}
+
+// olderThan reports whether a stored replication timestamp is missing,
+// unreadable, or earlier than the source timestamp, in which case the
+// replica update wins. A zero source timestamp never wins.
+func olderThan(stored string, src time.Time) bool {
+	if src.IsZero() {
+		return false
+	}
+	ondisk, err := time.Parse(time.RFC3339Nano, stored)
+	return err != nil || ondisk.Before(src)
+}
+
+func (s objectLockState) retentionIsOlderThan(src time.Time) bool {
+	return olderThan(s.retentionTimestamp, src)
+}
+
+func (s objectLockState) legalHoldIsOlderThan(src time.Time) bool {
+	return olderThan(s.legalHoldTimestamp, src)
+}
+
+// restoreRetention and restoreLegalHold put the stored state back into
+// metadata that was rebuilt from a request whose update was not applied.
+func (s objectLockState) restoreRetention(metadata map[string]string) {
+	if s.mode == "" {
+		return
+	}
+	metadata[strings.ToLower(xhttp.AmzObjectLockMode)] = s.mode
+	metadata[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = s.retainUntil
+	if s.retentionTimestamp != "" {
+		metadata[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = s.retentionTimestamp
+	}
+}
+
+func (s objectLockState) restoreLegalHold(metadata map[string]string) {
+	if s.legalHold == "" {
+		return
+	}
+	metadata[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = s.legalHold
+	if s.legalHoldTimestamp != "" {
+		metadata[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp] = s.legalHoldTimestamp
+	}
 }

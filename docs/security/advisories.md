@@ -49,4 +49,5 @@ The first Silo community release was cut from upstream history that already cont
 
 | Change | Fixed by | Summary |
 | :-- | :-- | :-- |
+| Replicated Object Lock updates ignored their timestamps | pre-release cleanup for the release after 20260806 | A replicated `CopyObject` rebuilt the metadata from the request before comparing replication timestamps, so the stored retention and legal-hold timestamps were never seen: any replica update was applied regardless of order, and the legal-hold timestamp was written under the retention key. A stale replica could therefore turn a newer legal hold off or shorten a newer retention. The stored state is now captured first, a replica update is applied only when its timestamp is newer, a stale one leaves the stored state in place, and each timestamp is kept under its own key. Inherited from upstream; every earlier release is affected. |
 | LDAP TLS regression | `ce1c537eb` | Restores TLS configuration propagation for `ldaps://` `DialURL()` connections so `MINIO_IDENTITY_LDAP_TLS_SKIP_VERIFY` and custom root CAs work again. |
