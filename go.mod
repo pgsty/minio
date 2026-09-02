@@ -1,6 +1,6 @@
 module github.com/minio/minio
 
-go 1.27.0
+go 1.27.1
 
 // Use Pigsty's SILO Console while preserving upstream import paths. The
 // pseudo-version pins the last commit of the v2.3.0 line before Console moved
