@@ -17,7 +17,7 @@ function start_silo() {
 	start_port=$1
 
 	export MINIO_ROOT_USER=silo
-	export MINIO_ROOT_PASSWORD=silo123
+	export MINIO_ROOT_PASSWORD=silo1234
 	unset MINIO_KMS_AUTO_ENCRYPTION # do not auto-encrypt objects
 	unset MINIO_CI_CD
 	unset CI

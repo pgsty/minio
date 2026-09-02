@@ -15,10 +15,10 @@ WORK_DIR="$PWD/.verify-$RANDOM"
 export MINT_MODE=core
 export MINT_DATA_DIR="$WORK_DIR/data"
 export SERVER_ENDPOINT="127.0.0.1:9000"
-export MC_HOST_verify="http://silo:silo123@${SERVER_ENDPOINT}/"
-export MC_HOST_verify_ipv6="http://silo:silo123@[::1]:9000/"
+export MC_HOST_verify="http://silo:silo1234@${SERVER_ENDPOINT}/"
+export MC_HOST_verify_ipv6="http://silo:silo1234@[::1]:9000/"
 export ACCESS_KEY="silo"
-export SECRET_KEY="silo123"
+export SECRET_KEY="silo1234"
 export ENABLE_HTTPS=0
 export GO111MODULE=on
 export GOGC=25
@@ -225,7 +225,7 @@ function __init__() {
 	shred -n 1 -s 65M - 1>"$FILE_65_MB" 2>/dev/null
 
 	## version is purposefully set to '3' for minio to migrate configuration file
-	echo '{"version": "3", "credential": {"accessKey": "silo", "secretKey": "silo123"}, "region": "us-east-1"}' >"$SILO_CONFIG_DIR/config.json"
+	echo '{"version": "3", "credential": {"accessKey": "silo", "secretKey": "silo1234"}, "region": "us-east-1"}' >"$SILO_CONFIG_DIR/config.json"
 
 	"$(git rev-parse --show-toplevel)/buildscripts/install-verified-fixture.sh" \
 		https://raw.githubusercontent.com/pgsty/mc/4c4dcc4b55baf238cd0c81030d77945b3828f157/functional-tests.sh \

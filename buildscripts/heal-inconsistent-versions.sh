@@ -22,8 +22,8 @@ function start_silo_4drive() {
 	start_port=$1
 
 	export MINIO_ROOT_USER=silo
-	export MINIO_ROOT_PASSWORD=silo123
-	export MC_HOST_silo="http://silo:silo123@127.0.0.1:${start_port}/"
+	export MINIO_ROOT_PASSWORD=silo1234
+	export MC_HOST_silo="http://silo:silo1234@127.0.0.1:${start_port}/"
 	unset MINIO_KMS_AUTO_ENCRYPTION # do not auto-encrypt objects
 	export MINIO_CI_CD=1
 
