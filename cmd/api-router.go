@@ -789,9 +789,10 @@ func corsHandler(handler http.Handler) http.Handler {
 			if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
 				// Resident-only lookup: this runs before authentication with a
 				// client-supplied path segment as the bucket name, so it must
-				// never load or cache metadata. A bucket with a stored CORS
-				// document that failed to parse gets no CORS headers; any other
-				// non-resident name falls back to the global policy below.
+				// never load or cache metadata. While startup loading is still
+				// running, and for a bucket whose stored CORS document failed to
+				// parse, the request gets no CORS headers; any other non-resident
+				// name falls back to the global policy below.
 				cfg, _, err := globalBucketMetadataSys.GetResidentCorsConfig(bucket)
 				if err == nil && cfg != nil {
 					if applyBucketCors(w, r, cfg) {

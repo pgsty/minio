@@ -598,15 +598,15 @@ func testBucketCorsUnknownBucketDoesNotGrowMetadata(obj ObjectLayer, _ string, _
 	}
 }
 
-func TestBucketCorsStartupMissUsesGlobalFallbackWithoutIO(t *testing.T) {
+func TestBucketCorsStartupMissFailsClosedWithoutIO(t *testing.T) {
 	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
 		t:          t,
-		objAPITest: testBucketCorsStartupMissUsesGlobalFallbackWithoutIO,
+		objAPITest: testBucketCorsStartupMissFailsClosedWithoutIO,
 		endpoints:  []string{"GetBucketCors"},
 	})
 }
 
-func testBucketCorsStartupMissUsesGlobalFallbackWithoutIO(obj ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+func testBucketCorsStartupMissFailsClosedWithoutIO(obj ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
 	oldObjectAPI := newObjectLayerFn()
 	oldMetadataSys := globalBucketMetadataSys
 	counting := &corsLookupCountingObjectLayer{ObjectLayer: obj}
@@ -630,8 +630,8 @@ func testBucketCorsStartupMissUsesGlobalFallbackWithoutIO(obj ObjectLayer, _ str
 	if !innerCalled || rec.Code != http.StatusNoContent {
 		t.Fatalf("startup miss did not reach inner handler: called=%v status=%d", innerCalled, rec.Code)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
-		t.Fatalf("startup miss did not fall back to the global policy: %q", got)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("startup miss used permissive global CORS: %q", got)
 	}
 	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
 		t.Fatalf("startup miss performed %d metadata reads", got)

@@ -400,18 +400,23 @@ func (sys *BucketMetadataSys) GetSSEConfig(bucket string) (*bucketsse.BucketSSEC
 // GetResidentCorsConfig returns the CORS configuration of a bucket whose
 // metadata is already resident in memory. It runs before authentication for
 // every Origin-bearing request with a client-supplied path segment, so it
-// never loads or caches metadata. A name that is not resident, including any
-// real bucket while startup loading is still in progress, reports
-// errConfigNotFound and the caller applies the global CORS policy exactly as
-// releases without per-bucket CORS did.
+// never loads or caches metadata. Until startup loading has completed, a
+// non-resident name may still be a bucket with a restrictive document, so it
+// reports errBucketMetadataNotInitialized and gets no CORS answer. After
+// that, a non-resident name reports errConfigNotFound and the caller applies
+// the global CORS policy exactly as releases without per-bucket CORS did.
 func (sys *BucketMetadataSys) GetResidentCorsConfig(bucket string) (*cors.Config, time.Time, error) {
 	if isReservedOrInvalidBucket(bucket, true) {
 		return nil, time.Time{}, errConfigNotFound
 	}
 	sys.RLock()
 	meta, ok := sys.metadataMap[bucket]
+	initialized := sys.initialized
 	sys.RUnlock()
 	if !ok {
+		if !initialized {
+			return nil, time.Time{}, errBucketMetadataNotInitialized
+		}
 		return nil, time.Time{}, errConfigNotFound
 	}
 	if meta.corsConfigErr != nil {
