@@ -2,13 +2,13 @@
 
 ## Status
 
-- Issue: [pgsty/silo#75](https://github.com/pgsty/silo/issues/75)
-- Baseline: `e4e3007da6d7d1198a6a050e34f84566d40a9654`
-- Working branch: `codex/issue-75-cors-hardening`
-- Decision: CORS-specific deterministic last-writer-wins register, described below
-- Implementation state: B2 is commit `724f8703d`; the final B2+B3 integration is signed commit `0eebc928f` on the PR #80 branch and has passed combined local acceptance
-- Release state: PR #80 remains open; nothing is merged, tagged, packaged, published as an image, or deployed
-- Final design/implementation review: the B2 implementation was GO; the combined B2+B3 Opus 5 Max review found one test-build conflict and one legacy-metadata load risk, both corrected before combined testing
+- Issue: [pgsty/silo#75](https://github.com/pgsty/silo/issues/75), closed; follow-ups
+  [#77](https://github.com/pgsty/silo/issues/77) and [#102](https://github.com/pgsty/silo/issues/102)
+- Merged: [PR #80](https://github.com/pgsty/silo/pull/80) implemented this register
+  (2026-08-29); [PR #101](https://github.com/pgsty/silo/pull/101) restricted the
+  pre-authentication lookup to resident metadata; [PR #103](https://github.com/pgsty/silo/pull/103)
+  replaced the CORS-specific lock with the shared `metadata.lock`
+- Release state: on `main`, not yet in a tagged release as of 2026-09-02
 
 This document defines the replication state, ordering, persistence, status,
 healing, concurrency, compatibility, and test contract for per-bucket CORS.
@@ -501,92 +501,3 @@ The required test matrix is:
 | Restart | cache removal/disk reload preserves tombstone or live state and status timestamp |
 | Legacy repair | a lenient historical document loads fail-closed without hiding other metadata and can be deleted or replaced |
 | Full seam | signed admin dispatch -> peer apply -> real status collection -> local heal -> cache reload -> remote heal dispatch |
-
-## Local Verification Record
-
-The committed B2 implementation passed:
-
-- the supplied adversarial base64 and same-payload/newer-timestamp tests;
-- focused CORS normal tests;
-- focused CORS race tests;
-- `go test ./internal/bucket/cors` and its race run;
-- `go test ./cmd -count=1`;
-- `go vet ./...`;
-- `go build ./...`;
-- repository-configured golangci-lint v2.13.1 with zero issues;
-- gofmt and `git diff --check`;
-- a signed admin dispatch -> apply -> status -> heal -> cache reload test.
-
-After integrating B3 and resolving overlap, the frozen combination passed:
-
-- focused strict-parser, validation, middleware, replication, namespace,
-  legacy-repair, and race tests;
-- CI-tagged `go test ./...`, full vet/build, module verification, pinned lint,
-  and rebrand/compatibility checks;
-- a real local two-site deployment with two nodes per site, including
-  bidirectional replacement, a site missing DELETE while offline, restart
-  heal, and a second restart preserving the tombstone; and
-- raw SigV4 wire probes that reject a lowercase method and trailing XML root,
-  accept a 255-code-point Unicode ID, and replicate the accepted config.
-
-The public EN/ZH design records pass a warning-fatal Hugo build, rendered link
-checking, and local browser QA. These results are acceptance evidence, not a
-release, deployment, tag, or production claim.
-
-The repository `make lint` bootstrap could not download its private copy of
-golangci-lint because the network returned HTTP status 000. The same exact
-v2.13.1 binary already installed locally was used with the Makefile's build
-tags, timeout, and configuration and reported zero issues.
-
-## Independent Review Record
-
-Four read-only local Claude Code reviews used canonical model
-`claude-opus-5` at `max` effort.
-
-The first review rejected the pre-fix candidate and identified the unsafe
-CreatedAt-based baseline, missing deterministic tie-break, missing atomic join,
-non-monotonic local barrier, timestamp-blind status, and initial-sync tombstone
-gap. The selected C-prime model incorporated the valid findings while rejecting
-the suggestion to rewrite normal source timestamps.
-
-The second review found no P0. Its `GO WITH FIXES` findings were peer semantic
-validation, the legacy/default admin mutation path bypassing the then-current
-CORS lock and join, CreatedAt-floor observability, and missing tests for
-invalid XML, lineage, and concurrent local transitions. Those required changes
-and tests are now in the working tree.
-
-The final review examined this design and the exact dirty diff, independently
-reran build, vet, lint, normal tests, and race tests, and found no P0 or P1.
-Its verdict was `GO WITH FIXES`: the implementation was explicitly judged GO,
-while five design-document statements required correction. It also suggested
-an optional status hardening so semantically invalid canonical payloads are
-not selected and retransmitted. The hardening and all mandatory documentation
-corrections are incorporated in the current tree. The final selected solution
-is therefore the C-prime register and invariants recorded in this document.
-
-The fourth review examined the resolved B2+B3 combination. It confirmed that
-the C-prime register, strict wire parser, MaxAge presence, wildcard credentials,
-Origin-null marker, rejected-preflight `Vary`, checksum classification, and
-peer validation can coexist. It found a conflict-resolution test helper typo
-and the risk that strict parsing could make all bucket metadata unavailable for
-a document accepted by a lenient development build. The helper was corrected;
-metadata loading now stashes a CORS-specific error, fails browser behavior
-closed, rejects new invalid saves, and allows a valid CORS PUT/DELETE repair.
-
-## Release Gates
-
-An implementation-level GO means only that the local CORS state machine and
-tests satisfy this document. It does not authorize a release.
-
-Before closing issue #75 or publishing a server artifact:
-
-1. commit the exact reviewed implementation and design with DCO sign-off;
-2. push a focused branch and run remote PR CI;
-3. merge and confirm main CI on the merge commit;
-4. finish public EN/ZH upgrade, fallback, and downgrade documentation in
-   `silo.pgsty.com`;
-5. run a real two-site process test for PUT, DELETE, simultaneous conflict,
-   offline peer restart, status, and heal;
-6. verify no release tag or image contains an intermediate candidate; and
-7. treat package, image, SBOM, signature, canary, and production verification
-   as separate gates.

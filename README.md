@@ -114,6 +114,8 @@ Report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md); e
 <p>
 <a href="https://github.com/magicxor"><img src="https://github.com/magicxor.png?size=64" width="44" alt="magicxor" title="@magicxor"></a>
 <a href="https://github.com/ycjlin"><img src="https://github.com/ycjlin.png?size=64" width="44" alt="ycjlin" title="@ycjlin"></a>
+<a href="https://github.com/h5vx"><img src="https://github.com/h5vx.png?size=64" width="44" alt="h5vx" title="@h5vx"></a>
+<a href="https://github.com/Dansyuqri"><img src="https://github.com/Dansyuqri.png?size=64" width="44" alt="Dansyuqri" title="@Dansyuqri"></a>
 <a href="https://github.com/davinkevin"><img src="https://github.com/davinkevin.png?size=64" width="44" alt="davinkevin" title="@davinkevin"></a>
 <a href="https://github.com/lem21h"><img src="https://github.com/lem21h.png?size=64" width="44" alt="lem21h" title="@lem21h"></a>
 <a href="https://github.com/sulin37392"><img src="https://github.com/sulin37392.png?size=64" width="44" alt="sulin37392" title="@sulin37392"></a>
