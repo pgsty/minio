@@ -85,7 +85,7 @@ func testPeerBucketCorsReplicationOrdering(_ ObjectLayer, _ string, bucket strin
 	if !meta.CorsConfigUpdatedAt.Equal(putAt) {
 		t.Fatalf("peer PUT timestamp = %v, want source time %v", meta.CorsConfigUpdatedAt, putAt)
 	}
-	cfg, cfgAt, err := globalBucketMetadataSys.GetCorsConfig(bucket)
+	cfg, cfgAt, err := globalBucketMetadataSys.GetResidentCorsConfig(bucket)
 	if err != nil {
 		t.Fatalf("peer PUT stored raw XML but no parsed config: %v", err)
 	}
@@ -165,10 +165,10 @@ func TestSiteReplicationMetaInfoPreservesCorsTombstone(t *testing.T) {
 
 func testSiteReplicationMetaInfoPreservesCorsTombstone(obj ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {
 	ctx := t.Context()
-	if _, err := globalBucketMetadataSys.Update(ctx, bucket, bucketCorsConfig, []byte(testSiteReplicationCORSDoc)); err != nil {
+	if _, err := updateLocalBucketCORSMetadata(ctx, obj, bucket, []byte(testSiteReplicationCORSDoc)); err != nil {
 		t.Fatal(err)
 	}
-	deleteAt, err := globalBucketMetadataSys.Delete(ctx, bucket, bucketCorsConfig)
+	deleteAt, err := updateLocalBucketCORSMetadata(ctx, obj, bucket, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -918,8 +918,8 @@ func testLegacyInvalidCorsMetadataCanBeDeleted(obj ObjectLayer, _ string, bucket
 		t.Fatalf("legacy CORS state = (%#v, %v), want fail-closed parse error", loaded.corsConfig, loaded.corsConfigErr)
 	}
 	globalBucketMetadataSys.Set(bucket, loaded)
-	if _, gotAt, err := globalBucketMetadataSys.GetCorsConfig(bucket); err == nil || !gotAt.Equal(legacyAt) {
-		t.Fatalf("GetCorsConfig = timestamp %v, error %v; want legacy timestamp and error", gotAt, err)
+	if _, gotAt, err := globalBucketMetadataSys.GetResidentCorsConfig(bucket); err == nil || !gotAt.Equal(legacyAt) {
+		t.Fatalf("GetResidentCorsConfig = timestamp %v, error %v; want legacy timestamp and error", gotAt, err)
 	}
 	if _, gotAt, err := globalBucketMetadataSys.GetCorsConfigXML(bucket); err == nil || !gotAt.Equal(legacyAt) {
 		t.Fatalf("GetCorsConfigXML = timestamp %v, error %v; want legacy timestamp and error", gotAt, err)

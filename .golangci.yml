@@ -5,7 +5,7 @@ linters:
     - durationcheck
     - forcetypeassert
     - gocritic
-    - gomodguard
+    - gomodguard_v2
     - govet
     - ineffassign
     - misspell
@@ -59,9 +59,6 @@ formatters:
   exclusions:
     generated: lax
     paths:
-      # gofumpt v0.11.0 and Go 1.27's gofmt disagree on the indentation of
-      # multiple composite literals returned from a single statement.
-      - internal/ioutil/wait_pipe\.go$
       - third_party$
       - builtin$
       - examples$

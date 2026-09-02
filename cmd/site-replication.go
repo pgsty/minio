@@ -889,7 +889,11 @@ func (c *SiteReplicationSys) DeleteBucketHook(ctx context.Context, bucket string
 	return errors.Unwrap(cerr)
 }
 
-func enablePeerBucketVersioning(meta *BucketMetadata) error {
+// enablePeerBucketVersioning turns versioning on for a bucket that is being
+// created or adopted. With lockEnabled, Object Lock requires every object to
+// be versioned: the S3 API rejects suspended or prefix-excluded versioning on
+// a locked bucket, so such a configuration is replaced rather than preserved.
+func enablePeerBucketVersioning(meta *BucketMetadata, lockEnabled bool) error {
 	if len(meta.VersioningConfigXML) == 0 {
 		meta.VersioningConfigXML = enabledBucketVersioningConfig
 		if meta.VersioningConfigUpdatedAt.IsZero() {
@@ -898,7 +902,7 @@ func enablePeerBucketVersioning(meta *BucketMetadata) error {
 		return nil
 	}
 	config, err := versioning.ParseConfig(bytes.NewReader(meta.VersioningConfigXML))
-	if err != nil {
+	if err != nil || (lockEnabled && (config.Suspended() || config.PrefixesExcluded())) {
 		meta.VersioningConfigXML = enabledBucketVersioningConfig
 		meta.VersioningConfigUpdatedAt = UTCNow()
 		return nil
@@ -943,7 +947,7 @@ func (c *SiteReplicationSys) PeerBucketMakeWithVersioningHandler(ctx context.Con
 		}
 		meta.SetCreatedAt(opts.CreatedAt)
 
-		if err = enablePeerBucketVersioning(&meta); err != nil {
+		if err = enablePeerBucketVersioning(&meta, opts.LockEnabled || len(meta.ObjectLockConfigXML) != 0); err != nil {
 			return err
 		}
 		if opts.LockEnabled && len(meta.ObjectLockConfigXML) == 0 {

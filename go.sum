@@ -474,6 +474,8 @@ github.com/minio/madmin-go/v3 v3.0.110 h1:FIYekj7YPc430ffpXFWiUtyut3qBt/unIAcDzJ
 github.com/minio/madmin-go/v3 v3.0.110/go.mod h1:WOe2kYmYl1OIlY2DSRHVQ8j1v4OItARQ6jGyQqcCud8=
 github.com/minio/md5-simd v1.1.2 h1:Gdi1DZK69+ZVMoNHRXJyNcxrMA4dSxoYHZSQbirFg34=
 github.com/minio/md5-simd v1.1.2/go.mod h1:MzdKDxYpY2BT9XQFocsiZf/NKVtR7nkE4RoEpN+20RM=
+github.com/minio/minio-go/v7 v7.3.1-0.20260828014306-0e78d3f18efe h1:By2FKNSOUGLOeb0x4D7xJMHr8x/X1ZW8PG780SpKUwQ=
+github.com/minio/minio-go/v7 v7.3.1-0.20260828014306-0e78d3f18efe/go.mod h1:KUPWdecEO1LWyUz+sTGXAuf2jZHrPh5fCsRH86QbPfk=
 github.com/minio/mux v1.9.2 h1:dQchne49BUBgOlxIHjx5wVe1gl5VXF2sxd4YCXkikTw=
 github.com/minio/mux v1.9.2/go.mod h1:OuHAsZsux+e562bcO2P3Zv/P0LMo6fPQ310SmoyG7mQ=
 github.com/minio/selfupdate v0.6.0 h1:i76PgT0K5xO9+hjzKcacQtO7+MjJ4JKA8Ak8XQ9DDwU=
@@ -543,10 +545,8 @@ github.com/pborman/getopt v0.0.0-20170112200414-7148bc3a4c30/go.mod h1:85jBQOZwp
 github.com/pelletier/go-toml v1.2.0/go.mod h1:5z9KED0ma1S8pY6P1sdut58dfprrGBbd/94hg7ilaic=
 github.com/pgsty/mc v0.0.0-20260829103737-5ed037ef4ec1 h1:CotSAPr11rZy3VK46j5rJQYQ2LHT2mjrd9vf0Ak12bA=
 github.com/pgsty/mc v0.0.0-20260829103737-5ed037ef4ec1/go.mod h1:pwkfUxTikOkKc+yvEWqFg7CAPZDj5Yl0YHFcZoPKmU8=
-github.com/pgsty/silo-console v0.0.0-20260829111139-e07ef01ab8bf h1:BwUlE3Qr5+/JWkdNYnpSFin7RW1Uiaf7ddGlR87Y9YQ=
-github.com/pgsty/silo-console v0.0.0-20260829111139-e07ef01ab8bf/go.mod h1:Zqpx0h9NB5WzXI+OE/VVFcrXD6fKtSqqfCurmtxyKPo=
-github.com/pgsty/silo-go/v7 v7.3.1 h1:CchXB5hdv1KGUCGBzR5Tz8hSE+3P9sGJFPY+ku8tC04=
-github.com/pgsty/silo-go/v7 v7.3.1/go.mod h1:3uUcXVLE1xLBTy+A/js/hHKkvcYQ/zMbj8rbtNQavxE=
+github.com/pgsty/silo-console v0.0.0-20260901090952-43f8447fda38 h1:PObL76LBUBKq+y9TPAmc8wlKD8C/BNyrXGjfUrWtUvk=
+github.com/pgsty/silo-console v0.0.0-20260901090952-43f8447fda38/go.mod h1:NHgq4XTLPa+Zt9lAIouHzgiFMULcyYjC3VwcMSuZf8U=
 github.com/pgsty/silo-pkg/v3 v3.12.3-0.20260829103855-748c94bf8ab7 h1:YSCnSqNjU2ddU84dA8ybJXOoWYx8VDu2qAzXMVweisc=
 github.com/pgsty/silo-pkg/v3 v3.12.3-0.20260829103855-748c94bf8ab7/go.mod h1:hSvfIz9FWTvEZqTsGEWQ8P/gD81pDee9W4j5oIvHZMY=
 github.com/philhofer/fwd v1.2.0 h1:e6DnBTl7vGY+Gz322/ASL4Gyp1FspeMvx1RNDoToZuM=

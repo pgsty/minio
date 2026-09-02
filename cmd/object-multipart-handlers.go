@@ -171,18 +171,11 @@ func (api objectAPIHandlers) NewMultipartUploadHandler(w http.ResponseWriter, r 
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}
-	rawReplica := hasReplicaStatus(r.Header)
-	markerExact := hasReplicationMarker(r.Header)
-	replicationPermitted := false
-	if rawReplica || markerExact {
-		replicationPermitted = replicationPermissionAllowed(ctx, r, bucket, object, policy.ReplicateObjectAction)
-	}
-	if rawReplica && !replicationPermitted {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+	trustedReplication, replicaTrusted, trustErr := evaluateReplicationTrust(ctx, r, bucket, object, policy.ReplicateObjectAction)
+	if trustErr != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(trustErr), r.URL)
 		return
 	}
-	trustedReplication := markerExact && replicationPermitted
-	replicaTrusted := trustedReplication && rawReplica
 	if hasReplicationRequestHeaders(r.Header) {
 		ctx, r = applyReplicationTrust(ctx, r, trustedReplication, replicaTrusted)
 	}
@@ -870,17 +863,11 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
 	}
-	rawReplica := hasReplicaStatus(r.Header)
-	markerExact := hasReplicationMarker(r.Header)
-	replicationPermitted := false
-	if rawReplica || markerExact {
-		replicationPermitted = replicationPermissionAllowed(ctx, r, bucket, object, policy.ReplicateObjectAction)
-	}
-	if rawReplica && !replicationPermitted {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+	trustedReplication, _, trustErr := evaluateReplicationTrust(ctx, r, bucket, object, policy.ReplicateObjectAction)
+	if trustErr != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(trustErr), r.URL)
 		return
 	}
-	trustedReplication := markerExact && replicationPermitted
 	storedReplica := mi.UserDefined[xhttp.AmzBucketReplicationStatus] == replication.Replica.String()
 	replicaTrusted := trustedReplication && storedReplica
 	if hasReplicationRequestHeaders(r.Header) {
@@ -1110,19 +1097,13 @@ func (api objectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}
-	rawReplica := hasReplicaStatus(r.Header)
-	markerExact := hasReplicationMarker(r.Header)
-	replicationPermitted := false
-	if rawReplica || markerExact {
-		replicationPermitted = replicationPermissionAllowed(ctx, r, bucket, object, policy.ReplicateObjectAction)
-	}
-	if rawReplica && !replicationPermitted {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+	trustedReplication, replicaTrusted, trustErr := evaluateReplicationTrust(ctx, r, bucket, object, policy.ReplicateObjectAction)
+	if trustErr != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(trustErr), r.URL)
 		return
 	}
-	trustedReplication := markerExact && replicationPermitted
 	if hasReplicationRequestHeaders(r.Header) {
-		ctx, r = applyReplicationTrust(ctx, r, trustedReplication, trustedReplication && rawReplica)
+		ctx, r = applyReplicationTrust(ctx, r, trustedReplication, replicaTrusted)
 	}
 
 	// Get upload id.

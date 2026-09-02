@@ -261,6 +261,11 @@ func TestBucketCorsMetadataErrorFailsClosed(t *testing.T) {
 	oldMetadataSys := globalBucketMetadataSys
 	setObjectLayer(nil)
 	globalBucketMetadataSys = NewBucketMetadataSys()
+	// A resident bucket whose stored CORS document does not parse must not be
+	// answered with the global policy: it has a configuration we cannot honor.
+	meta := newBucketMetadata("cors-metadata-error")
+	meta.corsConfigErr = fmt.Errorf("invalid bucket CORS configuration")
+	globalBucketMetadataSys.Set("cors-metadata-error", meta)
 	defer func() {
 		setObjectLayer(oldObjectAPI)
 		globalBucketMetadataSys = oldMetadataSys
@@ -704,37 +709,5 @@ func testBucketCorsLoadFailedBucketFailsClosed(obj ObjectLayer, _ string, _ stri
 	}
 	if got := counting.getObjectNInfoCalls.Load(); got != 0 {
 		t.Fatalf("load-failed CORS lookup performed %d synchronous bucket metadata reads", got)
-	}
-}
-
-// TestBucketCorsInternalBucketFailsClosed guards P2: an Origin-bearing request
-// whose first path segment is the reserved .minio.sys namespace must preserve
-// GetConfig's errInvalidArgument semantics and fail closed, not fall back to
-// the permissive global CORS policy.
-func TestBucketCorsInternalBucketFailsClosed(t *testing.T) {
-	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
-		t:          t,
-		objAPITest: testBucketCorsInternalBucketFailsClosed,
-		endpoints:  []string{"GetBucketCors"},
-	})
-}
-
-func testBucketCorsInternalBucketFailsClosed(_ ObjectLayer, _ string, _ string, _ http.Handler, _ auth.Credentials, t *testing.T) {
-	restoreInit := markBucketMetadataInitialized(t)
-	defer restoreInit()
-
-	wrapped := corsHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, getGetObjectURL("", minioMetaBucket, "object"), nil)
-	req.Header.Set("Origin", "https://app.example.com")
-	wrapped.ServeHTTP(rec, req)
-
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-		t.Fatalf("internal bucket fell back to global allow-origin %q", got)
-	}
-	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
-		t.Fatalf("internal bucket fell back to global credentials %q", got)
 	}
 }

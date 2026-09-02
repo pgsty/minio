@@ -45,8 +45,8 @@ function start_silo_10drive() {
 	start_port=$1
 
 	export MINIO_ROOT_USER=silo
-	export MINIO_ROOT_PASSWORD=silo123
-	export MC_HOST_silo="http://silo:silo123@127.0.0.1:${start_port}/"
+	export MINIO_ROOT_PASSWORD=silo1234
+	export MC_HOST_silo="http://silo:silo1234@127.0.0.1:${start_port}/"
 	unset MINIO_KMS_AUTO_ENCRYPTION # do not auto-encrypt objects
 	export MINIO_CI_CD=1
 
@@ -71,7 +71,7 @@ function start_silo_10drive() {
 	"${PWD}/mc" mb --with-versioning silo/bucket
 
 	export AWS_ACCESS_KEY_ID=silo
-	export AWS_SECRET_ACCESS_KEY=silo123
+	export AWS_SECRET_ACCESS_KEY=silo1234
 	aws --endpoint-url http://localhost:"$start_port" s3api create-multipart-upload --bucket bucket --key obj-1 >upload-id.json
 	uploadId=$(jq -r '.UploadId' upload-id.json)
 

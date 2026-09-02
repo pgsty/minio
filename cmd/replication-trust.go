@@ -70,6 +70,25 @@ func replicationPermissionAllowed(ctx context.Context, r *http.Request, bucket, 
 	return authorizeRequest(ctx, r, action) == ErrNone
 }
 
+// evaluateReplicationTrust decides whether a request may carry replication
+// semantics for the given action. A request that declares itself a replica
+// without holding the replication permission is rejected. trusted reports that
+// the exact marker came from a permitted principal; replica additionally
+// requires the request to declare REPLICA status.
+func evaluateReplicationTrust(ctx context.Context, r *http.Request, bucket, object string, action policy.Action) (trusted, replica bool, s3Err APIErrorCode) {
+	rawReplica := hasReplicaStatus(r.Header)
+	markerExact := hasReplicationMarker(r.Header)
+	permitted := false
+	if rawReplica || markerExact {
+		permitted = replicationPermissionAllowed(ctx, r, bucket, object, action)
+	}
+	if rawReplica && !permitted {
+		return false, false, ErrAccessDenied
+	}
+	trusted = markerExact && permitted
+	return trusted, trusted && rawReplica, ErrNone
+}
+
 // replicationRequestHeaders are internal request controls. They are removed
 // only after signature verification when a request has not earned replication
 // trust. Public S3/SSE/checksum headers, proxy loop guards, and replication
@@ -110,6 +129,9 @@ func hasReplicationRequestHeaders(h http.Header) bool {
 func cloneRequestWithoutReplicationHeaders(ctx context.Context, r *http.Request) *http.Request {
 	clone := r.Clone(ctx)
 	stripReplicationRequestHeaders(clone.Header)
+	// A streaming body reader built from the original request fills r.Trailer
+	// as the body is consumed; the checksum reader must observe that same map.
+	clone.Trailer = r.Trailer
 	return clone
 }
 

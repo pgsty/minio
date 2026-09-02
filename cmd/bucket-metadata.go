@@ -377,13 +377,6 @@ func (b *BucketMetadata) parseAllConfigs(ctx context.Context, objectAPI ObjectLa
 		b.corsConfig = nil
 	}
 
-	if bytes.Equal(b.ObjectLockConfigXML, enabledBucketObjectLockConfig) {
-		config, versioningErr := versioning.ParseConfig(bytes.NewReader(b.VersioningConfigXML))
-		if versioningErr != nil || !config.Enabled() {
-			b.VersioningConfigXML = enabledBucketVersioningConfig
-		}
-	}
-
 	if len(b.ObjectLockConfigXML) != 0 {
 		b.objectLockConfig, err = objectlock.ParseObjectLockConfig(bytes.NewReader(b.ObjectLockConfigXML))
 		if err != nil {
@@ -391,6 +384,15 @@ func (b *BucketMetadata) parseAllConfigs(ctx context.Context, objectAPI ObjectLa
 		}
 	} else {
 		b.objectLockConfig = nil
+	}
+	if b.objectLockConfig != nil {
+		// Object Lock requires every object to be versioned. Whatever the lock
+		// document contains, a suspended or prefix-excluded versioning document
+		// is replaced by plain Enabled versioning; Save persists the result.
+		config, versioningErr := versioning.ParseConfig(bytes.NewReader(b.VersioningConfigXML))
+		if versioningErr != nil || !config.Enabled() || config.PrefixesExcluded() {
+			b.VersioningConfigXML = enabledBucketVersioningConfig
+		}
 	}
 
 	if len(b.VersioningConfigXML) != 0 {

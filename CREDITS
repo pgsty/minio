@@ -17599,20 +17599,67 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 Bundled NOTICE file:
 
-This file is part of Console Server
+SILO Console
+============
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+This product includes software developed at MinIO, Inc. (https://min.io/):
+MinIO Console, Copyright (c) 2015-2026 MinIO, Inc.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
+SILO Console (this distribution, published from https://github.com/pgsty/silo-console
+and shipped as `silo-console`) is a community-maintained fork of MinIO Console.
+The code was carried forward through two earlier community maintenance lines
+before this one:
 
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  - Alevsk/console        https://github.com/Alevsk/console
+  - georgmangold/console  https://github.com/georgmangold/console
+                          Console portions Copyright (c) Georg Mangold and contributors
+
+Copyright in inherited code remains with MinIO, Inc. and the respective
+contributors. Modifications authored for SILO by PGSTY are
+Copyright (c) 2025-2026 PGSTY (Ruohang Feng) and the SILO contributors; other
+modifications remain the copyright of their respective authors. All existing
+copyright, license and attribution notices are kept intact.
+
+SILO and SILO Console are independent community projects and are not
+affiliated with, endorsed by, or sponsored by MinIO, Inc. MinIO(R) is a
+registered trademark of MinIO, Inc. Amazon S3 is a trademark of Amazon.com,
+Inc. or its affiliates; references to S3 describe protocol compatibility only.
+
+License
+-------
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program (the LICENSE file next to this notice). If not, see
+<https://www.gnu.org/licenses/>.
+
+Corresponding source
+--------------------
+
+Under section 13 of the AGPL, every user who interacts with this program over a
+network is offered its corresponding source. A release build reports the exact
+source revision it was built from: `console version` prints it, the HTTP server
+serves it in the page metadata used by the License, Login and anonymous pages,
+and the container image carries it in the `io.pgsty.silo-console.source`
+label. A build that cannot prove its exact revision says so instead of
+guessing; operators of such builds must publish their modified source and may
+point users at it with CONSOLE_CORRESPONDING_SOURCE_URL.
+
+Third-party notices
+-------------------
+
+The licenses and notices of every third-party component linked into the binary
+or bundled into the web application are collected in the CREDITS file next to
+this notice (`console credits`, or /legal/CREDITS on a running server).
 
 ================================================================
 
@@ -21707,8 +21754,8 @@ https://github.com/minio/md5-simd
 
 ================================================================
 
-github.com/minio/minio-go/v7 (replaced by github.com/pgsty/silo-go/v7)
-https://github.com/pgsty/silo-go/v7
+github.com/minio/minio-go/v7
+https://github.com/minio/minio-go/v7
 ----------------------------------------------------------------
 
                                  Apache License

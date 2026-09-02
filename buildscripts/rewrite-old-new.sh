@@ -28,8 +28,8 @@ function verify_rewrite() {
 	start_port=$1
 
 	export MINIO_ACCESS_KEY=silo
-	export MINIO_SECRET_KEY=silo123
-	export MC_HOST_silo="http://silo:silo123@127.0.0.1:${start_port}/"
+	export MINIO_SECRET_KEY=silo1234
+	export MC_HOST_silo="http://silo:silo1234@127.0.0.1:${start_port}/"
 	unset MINIO_KMS_AUTO_ENCRYPTION # do not auto-encrypt objects
 	export MINIO_CI_CD=1
 
@@ -87,7 +87,7 @@ function verify_rewrite() {
 		-debug \
 		-versions \
 		-access-key silo \
-		-secret-key silo123 \
+		-secret-key silo1234 \
 		-endpoint "http://127.0.0.1:${start_port}/" 2>&1 | grep INTACT; then
 		echo "server1 log:"
 		cat "${WORK_DIR}/server1.log"
@@ -105,14 +105,14 @@ function verify_rewrite() {
 		exit 1
 	fi
 
-	go run ./buildscripts/heal-manual.go "127.0.0.1:${start_port}" "silo" "silo123"
+	go run ./buildscripts/heal-manual.go "127.0.0.1:${start_port}" "silo" "silo1234"
 	sleep 1
 
 	if ! ./s3-check-md5 \
 		-debug \
 		-versions \
 		-access-key silo \
-		-secret-key silo123 \
+		-secret-key silo1234 \
 		-endpoint http://127.0.0.1:${start_port}/ 2>&1 | grep INTACT; then
 		echo "server1 log:"
 		cat "${WORK_DIR}/server1.log"

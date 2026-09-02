@@ -461,15 +461,15 @@ func registerAPIRouter(router *mux.Router) {
 		router.Methods(http.MethodPut).
 			HandlerFunc(s3APIMiddleware(api.PutBucketACLHandler)).
 			Queries("acl", "")
-		// GetBucketCors - this is a dummy call.
+		// GetBucketCors
 		router.Methods(http.MethodGet).
 			HandlerFunc(s3APIMiddleware(api.GetBucketCorsHandler)).
 			Queries("cors", "")
-		// PutBucketCors - this is a dummy call.
+		// PutBucketCors
 		router.Methods(http.MethodPut).
 			HandlerFunc(s3APIMiddleware(api.PutBucketCorsHandler)).
 			Queries("cors", "")
-		// DeleteBucketCors - this is a dummy call.
+		// DeleteBucketCors
 		router.Methods(http.MethodDelete).
 			HandlerFunc(s3APIMiddleware(api.DeleteBucketCorsHandler)).
 			Queries("cors", "")
@@ -787,15 +787,13 @@ func corsHandler(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "" {
 			if bucket, _ := request2BucketObjectName(r); bucket != "" && globalBucketMetadataSys != nil {
-				// Resident-only lookup: this runs pre-auth for every
-				// Origin-bearing request using a client-supplied path segment as
-				// the bucket name. It must never load or cache metadata for
-				// arbitrary names (see GetResidentCorsConfig). GetResidentCorsConfig
-				// is the single decision point: it returns errInvalidArgument for
-				// the internal .minio.sys namespace (fail closed), a config for a
-				// resident bucket, errBucketMetadataNotInitialized for a real but
-				// unloaded bucket (fail closed), and errConfigNotFound otherwise
-				// (fall back to the global policy below).
+				// Resident-only lookup: this runs before authentication with a
+				// client-supplied path segment as the bucket name, so it must
+				// never load or cache metadata. While startup loading is still
+				// running, for a real bucket whose metadata failed to load, and
+				// for a bucket whose stored CORS document failed to parse, the
+				// request gets no CORS headers; any other non-resident name falls
+				// back to the global policy below.
 				cfg, _, err := globalBucketMetadataSys.GetResidentCorsConfig(bucket)
 				if err == nil && cfg != nil {
 					if applyBucketCors(w, r, cfg) {

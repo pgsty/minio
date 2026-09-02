@@ -23,6 +23,9 @@ Contributors whose changes are merged into `main`.
 | [@mfredenhagen](https://github.com/mfredenhagen) | Bumped `go.opentelemetry.io` to address CVE-2026-39883 | [#19](https://github.com/pgsty/silo/pull/19) | [`1869bd3`](https://github.com/pgsty/silo/commit/1869bd30b) |
 | [@pinginfo](https://github.com/pinginfo) | Implemented `Flush` on `trackingResponseWriter`, repairing bucket notification streaming | [#34](https://github.com/pgsty/silo/pull/34) | [`65795ee`](https://github.com/pgsty/silo/commit/65795ee1f) |
 | [@waterkip](https://github.com/waterkip) | Repointed documentation links from the upstream domain to the Silo portal | [#41](https://github.com/pgsty/silo/pull/41) | [`d495d30`](https://github.com/pgsty/silo/commit/d495d30d5) |
+| [@Dansyuqri](https://github.com/Dansyuqri) | Added `ChecksumType` to the `CompleteMultipartUpload` response | [#57](https://github.com/pgsty/silo/pull/57) | [`d014a12`](https://github.com/pgsty/silo/commit/d014a12cf) |
+| [@ycjlin](https://github.com/ycjlin) | `ListObjects` returns `NoSuchBucket` for a prefix on a missing bucket | [#37](https://github.com/pgsty/silo/pull/37) | [`e9c5340`](https://github.com/pgsty/silo/commit/e9c5340be) |
+| [@h5vx](https://github.com/h5vx) | Implemented per-bucket CORS: stored configuration, S3 handlers, and request enforcement | [#71](https://github.com/pgsty/silo/pull/71) | [`e4e3007`](https://github.com/pgsty/silo/commit/e4e3007da) |
 
 ## Proposed changes
 
@@ -32,7 +35,6 @@ differently.
 | Contributor | Change | Pull request | Status |
 | :-- | :-- | :-- | :-- |
 | [@magicxor](https://github.com/magicxor) | `DELETE` precondition checks for the `If-Match` header | [#12](https://github.com/pgsty/silo/pull/12) | Open, queued for review |
-| [@ycjlin](https://github.com/ycjlin) | `ListObjects` should return `NoSuchBucket` for a prefix on a missing bucket | [#37](https://github.com/pgsty/silo/pull/37) | Open, queued for review |
 | [@davinkevin](https://github.com/davinkevin) | Distroless-based Docker image variant | [#21](https://github.com/pgsty/silo/pull/21) | Superseded by the distroless variant shipped in RELEASE.2026-08-06, which the PR anticipated by four months |
 | [@lem21h](https://github.com/lem21h) | Assorted fixes and improvements | [#36](https://github.com/pgsty/silo/pull/36) | Closed |
 | [@sulin37392](https://github.com/sulin37392) | Dependency updates against the fork | [#8](https://github.com/pgsty/silo/pull/8) | Closed |

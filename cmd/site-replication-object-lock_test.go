@@ -159,8 +159,10 @@ func testPeerBucketObjectLockMetadataWithoutLockEnabled(_ ObjectLayer, instanceT
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.objectLockConfig == nil || len(meta.VersioningConfigXML) != 0 {
-		t.Fatalf("%s: unlocked bucket metadata = objectLock:%v versioning:%q", instanceType, meta.objectLockConfig, meta.VersioningConfigXML)
+	// A lock configuration implies versioning: the bucket was created without
+	// lock, so receiving the configuration turns plain Enabled versioning on.
+	if meta.objectLockConfig == nil || !bytes.Equal(meta.VersioningConfigXML, enabledBucketVersioningConfig) {
+		t.Fatalf("%s: bucket metadata = objectLock:%v versioning:%q", instanceType, meta.objectLockConfig, meta.VersioningConfigXML)
 	}
 }
 

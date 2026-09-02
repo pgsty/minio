@@ -290,12 +290,6 @@ func (r Rule) matchAllowedOrigin(origin string) (string, bool) {
 	return "", false
 }
 
-// HasAllowedOrigin reports whether the rule allows the given origin.
-func (r Rule) HasAllowedOrigin(origin string) bool {
-	_, ok := r.matchAllowedOrigin(origin)
-	return ok
-}
-
 // HasAllowedMethod reports whether the rule allows the given HTTP method.
 func (r Rule) HasAllowedMethod(method string) bool {
 	for _, m := range r.AllowedMethods {

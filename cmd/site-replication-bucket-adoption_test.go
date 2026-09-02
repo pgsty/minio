@@ -39,7 +39,9 @@ func testPeerBucketAdoptionPreservesLockAndVersioningConfigs(_ ObjectLayer, inst
 	_ http.Handler, _ auth.Credentials, t *testing.T,
 ) {
 	objectLockXML := []byte(`<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>30</Days></DefaultRetention></Rule></ObjectLockConfiguration>`)
-	versioningXML := []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status><ExcludeFolders>true</ExcludeFolders><ExcludedPrefixes><Prefix>temporary/</Prefix></ExcludedPrefixes></VersioningConfiguration>`)
+	// A locked bucket carries plain Enabled versioning; adoption must keep the
+	// existing document and its timestamp rather than rewrite them.
+	versioningXML := []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>`)
 	if _, err := globalBucketMetadataSys.Update(t.Context(), bucketName, objectLockConfig, objectLockXML); err != nil {
 		t.Fatal(err)
 	}
@@ -77,15 +79,15 @@ func TestPeerBucketAdoptionBootstrapsMissingConfigs(t *testing.T) {
 	})
 }
 
-func TestPeerBucketAdoptionPreservesCustomVersioningWhenEnablingLock(t *testing.T) {
+func TestPeerBucketAdoptionNormalizesVersioningWhenEnablingLock(t *testing.T) {
 	defer DetectTestLeak(t)()
 	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
 		t:          t,
-		objAPITest: testPeerBucketAdoptionPreservesCustomVersioningWhenEnablingLock,
+		objAPITest: testPeerBucketAdoptionNormalizesVersioningWhenEnablingLock,
 	})
 }
 
-func testPeerBucketAdoptionPreservesCustomVersioningWhenEnablingLock(_ ObjectLayer, instanceType, bucketName string,
+func testPeerBucketAdoptionNormalizesVersioningWhenEnablingLock(_ ObjectLayer, instanceType, bucketName string,
 	_ http.Handler, _ auth.Credentials, t *testing.T,
 ) {
 	versioningXML := []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status><ExcludeFolders>true</ExcludeFolders><ExcludedPrefixes><Prefix>temporary/</Prefix></ExcludedPrefixes></VersioningConfiguration>`)
@@ -106,8 +108,8 @@ func testPeerBucketAdoptionPreservesCustomVersioningWhenEnablingLock(_ ObjectLay
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(after.VersioningConfigXML, before.VersioningConfigXML) || !after.VersioningConfigUpdatedAt.Equal(before.VersioningConfigUpdatedAt) {
-		t.Fatalf("%s: custom versioning changed while enabling Object Lock", instanceType)
+	if !bytes.Equal(after.VersioningConfigXML, enabledBucketVersioningConfig) || !after.VersioningConfigUpdatedAt.After(before.VersioningConfigUpdatedAt) {
+		t.Fatalf("%s: prefix-excluded versioning survived enabling Object Lock: %q", instanceType, after.VersioningConfigXML)
 	}
 	if !bytes.Equal(after.ObjectLockConfigXML, enabledBucketObjectLockConfig) {
 		t.Fatalf("%s: Object Lock was not bootstrapped", instanceType)
@@ -152,7 +154,7 @@ func TestEnablePeerBucketVersioningRepairsInvalidConfig(t *testing.T) {
 	meta := newBucketMetadata("bucket")
 	meta.Created = time.Date(2026, time.August, 29, 8, 0, 0, 0, time.UTC)
 	meta.VersioningConfigXML = []byte(`<VersioningConfiguration>`)
-	if err := enablePeerBucketVersioning(&meta); err != nil {
+	if err := enablePeerBucketVersioning(&meta, false); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(meta.VersioningConfigXML, enabledBucketVersioningConfig) || meta.VersioningConfigUpdatedAt.IsZero() {
@@ -186,5 +188,50 @@ func testPeerBucketAdoptionBootstrapsMissingConfigs(_ ObjectLayer, instanceType,
 	if !after.ObjectLockConfigUpdatedAt.Equal(before.Created) || !after.VersioningConfigUpdatedAt.Equal(before.Created) {
 		t.Fatalf("%s: bootstrap timestamps = (%v, %v), want %v", instanceType,
 			after.ObjectLockConfigUpdatedAt, after.VersioningConfigUpdatedAt, before.Created)
+	}
+}
+
+// TestLockedBucketNormalizesVersioningOnSave covers the metadata boundary
+// itself: whatever writer stores a suspended or prefix-excluded versioning
+// document on a bucket that carries an Object Lock configuration, including
+// one with a default retention rule, Save replaces it with plain Enabled
+// versioning.
+func TestLockedBucketNormalizesVersioningOnSave(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testLockedBucketNormalizesVersioningOnSave,
+		makeBucketOptions: MakeBucketOptions{LockEnabled: true},
+	})
+}
+
+func testLockedBucketNormalizesVersioningOnSave(_ ObjectLayer, instanceType, bucketName string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	lockWithRule := []byte(`<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>30</Days></DefaultRetention></Rule></ObjectLockConfiguration>`)
+	if _, err := globalBucketMetadataSys.Update(t.Context(), bucketName, objectLockConfig, lockWithRule); err != nil {
+		t.Fatal(err)
+	}
+	for name, versioningXML := range map[string][]byte{
+		"prefix-excluded": []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status><ExcludeFolders>true</ExcludeFolders><ExcludedPrefixes><Prefix>temporary/</Prefix></ExcludedPrefixes></VersioningConfiguration>`),
+		"suspended":       []byte(`<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Suspended</Status></VersioningConfiguration>`),
+	} {
+		if _, err := globalBucketMetadataSys.Update(t.Context(), bucketName, bucketVersioningConfig, versioningXML); err != nil {
+			t.Fatal(err)
+		}
+		meta, err := globalBucketMetadataSys.Get(bucketName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(meta.VersioningConfigXML, enabledBucketVersioningConfig) {
+			t.Fatalf("%s/%s: locked bucket kept versioning %q", instanceType, name, meta.VersioningConfigXML)
+		}
+		reloaded, err := loadBucketMetadata(t.Context(), newObjectLayerFn(), bucketName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(reloaded.VersioningConfigXML, enabledBucketVersioningConfig) {
+			t.Fatalf("%s/%s: locked bucket persisted versioning %q", instanceType, name, reloaded.VersioningConfigXML)
+		}
 	}
 }

@@ -57,11 +57,7 @@ func WaitPipe() (*PipeReader, *PipeWriter) {
 	r, w := io.Pipe()
 	var wg sync.WaitGroup
 	wg.Add(1)
-	return &PipeReader{
-		PipeReader: r,
-		wait:       wg.Wait,
-	}, &PipeWriter{
-		PipeWriter: w,
-		done:       wg.Done,
-	}
+	pr := &PipeReader{PipeReader: r, wait: wg.Wait}
+	pw := &PipeWriter{PipeWriter: w, done: wg.Done}
+	return pr, pw
 }

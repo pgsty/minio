@@ -69,11 +69,13 @@ func testSiteReplicationStatusAccountsPerSiteAndSurvivesMalformedConfig(obj Obje
 		bucketSSEConfig:        sseXML,
 		bucketQuotaConfigFile:  quotaJSON,
 		bucketPolicyConfig:     policyJSON,
-		bucketCorsConfig:       []byte(testSiteReplicationCORSDoc),
 	} {
 		if _, err := globalBucketMetadataSys.Update(ctx, localBucket, configFile, data); err != nil {
 			t.Fatalf("%s: update %s: %v", instanceType, configFile, err)
 		}
+	}
+	if _, err := updateLocalBucketCORSMetadata(ctx, obj, localBucket, []byte(testSiteReplicationCORSDoc)); err != nil {
+		t.Fatalf("%s: update %s: %v", instanceType, bucketCorsConfig, err)
 	}
 
 	encode := func(data []byte) *string {

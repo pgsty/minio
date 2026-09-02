@@ -20,7 +20,7 @@ function start_silo_3_node() {
 	done
 
 	export MINIO_ROOT_USER=silo
-	export MINIO_ROOT_PASSWORD=silo123
+	export MINIO_ROOT_PASSWORD=silo1234
 	export MINIO_ERASURE_SET_DRIVE_COUNT=6
 	export MINIO_CI_CD=1
 
@@ -46,7 +46,7 @@ function start_silo_3_node() {
 	pid3=$!
 	disown $pid3
 
-	export MC_HOST_mysilo="http://silo:silo123@127.0.0.1:$((start_port + 1))"
+	export MC_HOST_mysilo="http://silo:silo1234@127.0.0.1:$((start_port + 1))"
 	timeout 15m /tmp/mc ready mysilo || fail
 
 	[ ${first_time} -eq 0 ] && upload_objects
@@ -117,7 +117,7 @@ function __init__() {
 	mkdir -p "$SILO_CONFIG_DIR"
 
 	## version is purposefully set to '3' for minio to migrate configuration file
-	echo '{"version": "3", "credential": {"accessKey": "silo", "secretKey": "silo123"}, "region": "us-east-1"}' >"$SILO_CONFIG_DIR/config.json"
+	echo '{"version": "3", "credential": {"accessKey": "silo", "secretKey": "silo1234"}, "region": "us-east-1"}' >"$SILO_CONFIG_DIR/config.json"
 
 	if [ ! -f /tmp/mc ]; then
 		"$(git rev-parse --show-toplevel)/buildscripts/install-mcli.sh" /tmp/mc
