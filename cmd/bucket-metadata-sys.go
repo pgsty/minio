@@ -595,6 +595,7 @@ func (sys *BucketMetadataSys) GetConfig(ctx context.Context, bucket string) (met
 	}
 	sys.Lock()
 	sys.metadataMap[bucket] = meta
+	sys.clearLoadFailure(bucket)
 	sys.Unlock()
 
 	return meta, true, nil
