@@ -51,17 +51,25 @@ type BucketMetadataSys struct {
 	initialized bool
 	group       *singleflight.Group
 	metadataMap map[string]BucketMetadata
-	// loadFailed records real buckets whose metadata could not be loaded at
-	// startup or during a refresh. They are absent from metadataMap even though
-	// the subsystem is initialized, and without this bit a resident-only lookup
-	// could not tell them apart from a name that is not a bucket at all. The
-	// set is bounded by the number of failed loads and empty in normal operation.
+	// loadFailed records real buckets whose metadata has never been loaded
+	// successfully because the startup load or a refresh failed. They are
+	// absent from metadataMap even though the subsystem is initialized, and
+	// without this bit a resident-only lookup could not tell them apart from a
+	// name that is not a bucket at all. It never holds a resident bucket, is
+	// bounded by the number of failed loads, and is empty in normal operation.
 	loadFailed map[string]struct{}
 }
 
 // noteLoadFailure and clearLoadFailure maintain loadFailed; both expect the
-// caller to hold sys.Lock.
-func (sys *BucketMetadataSys) noteLoadFailure(bucket string)  { sys.loadFailed[bucket] = struct{}{} }
+// caller to hold sys.Lock. A bucket that is resident keeps its last loaded
+// metadata through a failed refresh, exactly like every other bucket
+// configuration, so the set only ever holds non-resident buckets.
+func (sys *BucketMetadataSys) noteLoadFailure(bucket string) {
+	if _, resident := sys.metadataMap[bucket]; !resident {
+		sys.loadFailed[bucket] = struct{}{}
+	}
+}
+
 func (sys *BucketMetadataSys) clearLoadFailure(bucket string) { delete(sys.loadFailed, bucket) }
 
 // Count returns number of bucket metadata map entries.

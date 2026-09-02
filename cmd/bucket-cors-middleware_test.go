@@ -711,3 +711,33 @@ func testBucketCorsLoadFailedBucketFailsClosed(obj ObjectLayer, _ string, _ stri
 		t.Fatalf("load-failed CORS lookup performed %d synchronous bucket metadata reads", got)
 	}
 }
+
+// TestBucketCorsResidentConfigSurvivesRefreshFailure: a resident bucket keeps
+// its last loaded CORS configuration through a failed refresh, like every
+// other bucket configuration, and the failure set never records a resident
+// bucket. Only a bucket that was never loaded fails closed.
+func TestBucketCorsResidentConfigSurvivesRefreshFailure(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:          t,
+		objAPITest: testBucketCorsResidentConfigSurvivesRefreshFailure,
+		endpoints:  []string{"GetBucketCors"},
+	})
+}
+
+func testBucketCorsResidentConfigSurvivesRefreshFailure(obj ObjectLayer, _ string, bucket string, _ http.Handler, _ auth.Credentials, t *testing.T) {
+	if _, err := updateLocalBucketCORSMetadata(t.Context(), obj, bucket, []byte(testSiteReplicationCORSDoc)); err != nil {
+		t.Fatal(err)
+	}
+	sys := globalBucketMetadataSys
+	sys.Lock()
+	sys.noteLoadFailure(bucket)
+	_, marked := sys.loadFailed[bucket]
+	sys.Unlock()
+	if marked {
+		t.Fatal("a resident bucket was recorded as a load failure")
+	}
+	cfg, _, err := sys.GetResidentCorsConfig(bucket)
+	if err != nil || cfg == nil {
+		t.Fatalf("resident CORS configuration lost after a refresh failure: cfg=%v err=%v", cfg, err)
+	}
+}
