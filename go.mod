@@ -7,17 +7,21 @@ go 1.27.0
 // are ignored when this module is consumed as a dependency.
 replace github.com/minio/minio-go/v7 => github.com/pgsty/silo-go/v7 v7.3.1
 
-// Use Pigsty's SILO Console v2.2.1 release while preserving upstream import paths.
-// The pseudo-version pins v2.2.1's commit because the compatible module path has no /v2 suffix.
+// Use Pigsty's SILO Console while preserving upstream import paths. The
+// pseudo-version pins v2.2.1 plus its dependency pins: the last Console commit
+// that still consumes silo-pkg through the github.com/minio/pkg/v3 replacement
+// below. Console v2.3.0 and later require github.com/pgsty/silo-pkg/v3 directly.
 replace github.com/minio/console => github.com/pgsty/silo-console v0.0.0-20260829111139-e07ef01ab8bf
 
 // Use Pigsty's maintained mc fork for Console's embedded client code.
 replace github.com/minio/mc => github.com/pgsty/mc v0.0.0-20260829103737-5ed037ef4ec1
 
 // Use Pigsty's maintained SILO package fork while preserving upstream import paths.
-// This retains the LDAP TLS fix tracked in https://github.com/pgsty/silo/issues/15.
-// v3.12.2 retains the minio/minio#20449 bucket-write boundary hardening,
-// rejects bare ARN prefixes on strict policy-write paths, and selects Silo Go v7.3.1.
+// This retains the LDAP TLS fix tracked in https://github.com/pgsty/silo/issues/15,
+// the minio/minio#20449 bucket-write boundary hardening, bare ARN rejection on
+// strict policy-write paths, and Silo Go v7.3.1. It is the last silo-pkg commit
+// that declares the github.com/minio/pkg/v3 module path; v3.13.0 moved to
+// github.com/pgsty/silo-pkg/v3 and cannot be selected through this replace.
 replace github.com/minio/pkg/v3 => github.com/pgsty/silo-pkg/v3 v3.12.3-0.20260829103855-748c94bf8ab7
 
 // v22.7.0 does not compile on NetBSD because its unix implementation uses
