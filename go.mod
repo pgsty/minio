@@ -1,6 +1,6 @@
 module github.com/minio/minio
 
-go 1.27.0
+go 1.27.1
 
 // Use Pigsty's SILO Console while preserving upstream import paths. The
 // pseudo-version pins the last commit of the v2.3.0 line before Console moved
@@ -118,7 +118,7 @@ require (
 	go.uber.org/zap v1.28.0
 	go.yaml.in/yaml/v3 v3.0.5
 	goftp.io/server/v2 v2.0.3
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0

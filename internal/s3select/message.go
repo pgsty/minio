@@ -295,7 +295,15 @@ func (writer *messageWriter) start() {
 		select {
 		case data := <-writer.errCh:
 			quitFlag = true
-			// Flush collected records before sending error message
+			// A record accepted by SendRecord may still be queued when the
+			// error arrives, because select picks between the two channels
+			// at random. Stage it first so every record produced before the
+			// error precedes the error message instead of being dropped.
+			for len(writer.payloadCh) > 0 {
+				if !writer.stageRecord(<-writer.payloadCh) {
+					break
+				}
+			}
 			if !writer.flushRecords() {
 				break
 			}
@@ -316,23 +324,8 @@ func (writer *messageWriter) start() {
 					break
 				}
 				writer.write(endMessage)
-			} else {
-				for payload.Len() > 0 {
-					copiedLen := copy(writer.payloadBuffer[writer.payloadBufferIndex:], payload.Bytes())
-					writer.payloadBufferIndex += copiedLen
-					payload.Next(copiedLen)
-
-					// If buffer is filled, flush it now!
-					freeSpace := bufLength - writer.payloadBufferIndex
-					if freeSpace == 0 {
-						if !writer.flushRecords() {
-							quitFlag = true
-							break
-						}
-					}
-				}
-
-				bufPool.Put(payload)
+			} else if !writer.stageRecord(payload) {
+				quitFlag = true
 			}
 
 		case <-recordStagingTicker.C:
@@ -366,6 +359,26 @@ func (writer *messageWriter) start() {
 		payload := <-writer.payloadCh
 		bufPool.Put(payload)
 	}
+}
+
+// stageRecord copies a record into the payload buffer, flushing whenever
+// the buffer fills, and returns the buffer to the pool. It reports false when
+// a flush failed.
+func (writer *messageWriter) stageRecord(payload *bytes.Buffer) bool {
+	defer bufPool.Put(payload)
+	for payload.Len() > 0 {
+		copiedLen := copy(writer.payloadBuffer[writer.payloadBufferIndex:], payload.Bytes())
+		writer.payloadBufferIndex += copiedLen
+		payload.Next(copiedLen)
+
+		// If buffer is filled, flush it now!
+		if bufLength-writer.payloadBufferIndex == 0 {
+			if !writer.flushRecords() {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Sends a single whole record.
