@@ -1308,18 +1308,11 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrInvalidStorageClass), r.URL)
 		return
 	}
-	rawReplica := hasReplicaStatus(r.Header)
-	markerExact := hasReplicationMarker(r.Header)
-	replicationPermitted := false
-	if rawReplica || markerExact {
-		replicationPermitted = replicationPermissionAllowed(ctx, r, dstBucket, dstObject, policy.ReplicateObjectAction)
-	}
-	if rawReplica && !replicationPermitted {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+	trustedReplication, replicaTrusted, trustErr := evaluateReplicationTrust(ctx, r, dstBucket, dstObject, policy.ReplicateObjectAction)
+	if trustErr != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(trustErr), r.URL)
 		return
 	}
-	trustedReplication := markerExact && replicationPermitted
-	replicaTrusted := trustedReplication && rawReplica
 	if hasReplicationRequestHeaders(r.Header) {
 		ctx, r = applyReplicationTrust(ctx, r, trustedReplication, replicaTrusted)
 	}
@@ -2073,14 +2066,9 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	rawReplica := hasReplicaStatus(r.Header)
-	markerExact := hasReplicationMarker(r.Header)
-	replicationPermitted := false
-	if rawReplica || markerExact {
-		replicationPermitted = replicationPermissionAllowed(ctx, r, bucket, object, policy.ReplicateObjectAction)
-	}
-	if rawReplica && !replicationPermitted {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+	trustedReplication, replicaTrusted, trustErr := evaluateReplicationTrust(ctx, r, bucket, object, policy.ReplicateObjectAction)
+	if trustErr != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(trustErr), r.URL)
 		return
 	}
 	if _, ok := r.Header[xhttp.MinIOSourceReplicationCheck]; ok {
@@ -2093,8 +2081,6 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
 		return
 	}
-	trustedReplication := markerExact && replicationPermitted
-	replicaTrusted := trustedReplication && rawReplica
 	if hasReplicationRequestHeaders(r.Header) {
 		ctx, r = applyReplicationTrust(ctx, r, trustedReplication, replicaTrusted)
 	}
@@ -2832,17 +2818,11 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Error), r.URL)
 		return
 	}
-	rawReplica := hasReplicaStatus(r.Header)
-	markerExact := hasReplicationMarker(r.Header)
-	replicationPermitted := false
-	if rawReplica || markerExact {
-		replicationPermitted = replicationPermissionAllowed(ctx, r, bucket, object, policy.ReplicateDeleteAction)
-	}
-	if rawReplica && !replicationPermitted {
-		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrAccessDenied), r.URL)
+	trustedReplication, replica, trustErr := evaluateReplicationTrust(ctx, r, bucket, object, policy.ReplicateDeleteAction)
+	if trustErr != ErrNone {
+		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(trustErr), r.URL)
 		return
 	}
-	trustedReplication := markerExact && replicationPermitted
 	var s3Error APIErrorCode
 	if trustedReplication {
 		s3Error = authorizeReplicationDelete(ctx, r)
@@ -2858,7 +2838,6 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrReplicationPermissionCheckError), r.URL)
 		return
 	}
-	replica := trustedReplication && rawReplica
 	if hasReplicationRequestHeaders(r.Header) {
 		ctx, r = applyReplicationTrust(ctx, r, trustedReplication, replica)
 	}

@@ -830,3 +830,57 @@ func testAPISSECMultipartReplicationTrust(obj ObjectLayer, instanceType, bucketN
 		t.Fatal("replicated SSE-C multipart object did not decrypt to source plaintext")
 	}
 }
+
+// TestAPIStreamingTrailerWithUntrustedReplicationHeaders verifies that a
+// request which does not earn replication trust is still processed as an
+// ordinary upload. The streaming body reader fills the original request's
+// trailer while the handler continues with a header-stripped clone, so the
+// trailing checksum must remain visible through that clone.
+func TestAPIStreamingTrailerWithUntrustedReplicationHeaders(t *testing.T) {
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{t: t, objAPITest: testAPIStreamingTrailerWithUntrustedReplicationHeaders})
+}
+
+func testAPIStreamingTrailerWithUntrustedReplicationHeaders(obj ObjectLayer, instanceType, bucketName string, apiRouter http.Handler, _ auth.Credentials, t *testing.T) {
+	putOnly := newObjectAttributesAuthzUser(t, instanceType, bucketName, `"s3:PutObject"`)
+	payload := bytes.Repeat([]byte("trailer probe "), 4096)
+	send := func(targetURL string) *httptest.ResponseRecorder {
+		req, err := newStreamingUnsignedTrailerRequest(http.MethodPut, targetURL, payload, UTCNow())
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(xhttp.MinIOSourceReplicationRequest, "true")
+		req.Header.Set(xhttp.MinIOSourceETag, "forged-etag")
+		if err := signRequestV4(req, putOnly.AccessKey, putOnly.SecretKey); err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := send(getPutObjectURL("", bucketName, "trailer-object")); rec.Code != http.StatusOK {
+		t.Fatalf("%s: PutObject status %d: %s", instanceType, rec.Code, rec.Body.String())
+	}
+	info, err := obj.GetObjectInfo(t.Context(), bucketName, "trailer-object", ObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size != int64(len(payload)) || info.ETag == "forged-etag" {
+		t.Fatalf("%s: stored size %d etag %q, want %d bytes with a computed etag", instanceType, info.Size, info.ETag, len(payload))
+	}
+
+	upload, err := obj.NewMultipartUpload(t.Context(), bucketName, "trailer-multipart", ObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := send(getPutObjectPartURL("", bucketName, "trailer-multipart", upload.UploadID, "1")); rec.Code != http.StatusOK {
+		t.Fatalf("%s: PutObjectPart status %d: %s", instanceType, rec.Code, rec.Body.String())
+	}
+	parts, err := obj.ListObjectParts(t.Context(), bucketName, "trailer-multipart", upload.UploadID, 0, 10, ObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts.Parts) != 1 || parts.Parts[0].Size != int64(len(payload)) {
+		t.Fatalf("%s: uploaded parts %+v, want one part of %d bytes", instanceType, parts.Parts, len(payload))
+	}
+}
