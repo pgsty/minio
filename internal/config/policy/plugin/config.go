@@ -26,8 +26,8 @@ import (
 
 	"github.com/minio/minio/internal/config"
 	xhttp "github.com/minio/minio/internal/http"
-	xnet "github.com/minio/pkg/v3/net"
-	"github.com/minio/pkg/v3/policy"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
+	"github.com/pgsty/silo-pkg/v3/policy"
 )
 
 // Authorization Plugin config and env variables

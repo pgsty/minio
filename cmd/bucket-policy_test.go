@@ -29,8 +29,8 @@ import (
 	"github.com/minio/minio/internal/auth"
 	"github.com/minio/minio/internal/handlers"
 	xhttp "github.com/minio/minio/internal/http"
-	"github.com/minio/pkg/v3/policy"
-	"github.com/minio/pkg/v3/policy/condition"
+	"github.com/pgsty/silo-pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/policy/condition"
 )
 
 const (

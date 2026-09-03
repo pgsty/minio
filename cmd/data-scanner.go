@@ -42,7 +42,7 @@ import (
 	"github.com/minio/minio/internal/config/heal"
 	"github.com/minio/minio/internal/event"
 	xioutil "github.com/minio/minio/internal/ioutil"
-	"github.com/minio/pkg/v3/console"
+	"github.com/pgsty/silo-pkg/v3/console"
 	uatomic "go.uber.org/atomic"
 )
 

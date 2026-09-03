@@ -32,8 +32,8 @@ import (
 	"github.com/minio/minio/internal/event"
 	"github.com/minio/minio/internal/event/target"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/env"
-	xnet "github.com/minio/pkg/v3/net"
+	"github.com/pgsty/silo-pkg/v3/env"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 	"github.com/rabbitmq/amqp091-go"
 )
 

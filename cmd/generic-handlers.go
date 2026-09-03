@@ -33,7 +33,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/s3utils"
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio/internal/grid"
-	xnet "github.com/minio/pkg/v3/net"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 
 	"github.com/minio/minio/internal/amztime"
 	"github.com/minio/minio/internal/config/dns"

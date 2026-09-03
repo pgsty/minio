@@ -31,7 +31,7 @@ import (
 	"github.com/minio/minio/internal/crypto"
 	"github.com/minio/minio/internal/hash/sha256"
 	xhttp "github.com/minio/minio/internal/http"
-	"github.com/minio/pkg/v3/sync/errgroup"
+	"github.com/pgsty/silo-pkg/v3/sync/errgroup"
 )
 
 // Object was stored with additional erasure codes due to degraded system at upload time

@@ -29,8 +29,8 @@ import (
 
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/mcontext"
-	"github.com/minio/pkg/v3/console"
-	"github.com/minio/pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/console"
+	"github.com/pgsty/silo-pkg/v3/env"
 )
 
 // Indicator if logging is enabled.

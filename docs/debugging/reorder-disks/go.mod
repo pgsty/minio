@@ -1,7 +1,5 @@
 module github.com/minio/minio/docs/debugging/reorder-disks
 
-go 1.21
+go 1.26.0
 
-toolchain go1.24.8
-
-require github.com/minio/pkg/v3 v3.0.1
+require github.com/pgsty/silo-pkg/v3 v3.13.2

@@ -21,8 +21,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	xnet "github.com/minio/pkg/v3/net"
 	natsserver "github.com/nats-io/nats-server/v2/test"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 )
 
 func TestNatsConnTLSCustomCA(t *testing.T) {

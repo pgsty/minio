@@ -39,9 +39,9 @@ import (
 	"github.com/klauspost/compress/zstd"
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/env"
-	xnet "github.com/minio/pkg/v3/net"
 	"github.com/minio/selfupdate"
+	"github.com/pgsty/silo-pkg/v3/env"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 	gopsutilcpu "github.com/shirou/gopsutil/v3/cpu"
 )
 

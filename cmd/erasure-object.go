@@ -49,9 +49,9 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/mimedb"
-	"github.com/minio/pkg/v3/sync/errgroup"
 	"github.com/minio/sio"
+	"github.com/pgsty/silo-pkg/v3/mimedb"
+	"github.com/pgsty/silo-pkg/v3/sync/errgroup"
 )
 
 // list all errors which can be ignored in object operations.

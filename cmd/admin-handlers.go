@@ -60,8 +60,8 @@ import (
 	"github.com/minio/minio/internal/kms"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/mux"
-	xnet "github.com/minio/pkg/v3/net"
-	"github.com/minio/pkg/v3/policy"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
+	"github.com/pgsty/silo-pkg/v3/policy"
 	"github.com/secure-io/sio-go"
 	"github.com/zeebo/xxh3"
 )

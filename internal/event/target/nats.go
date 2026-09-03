@@ -33,9 +33,9 @@ import (
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/minio/internal/once"
 	"github.com/minio/minio/internal/store"
-	xnet "github.com/minio/pkg/v3/net"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/stan.go"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 )
 
 // NATS related constants

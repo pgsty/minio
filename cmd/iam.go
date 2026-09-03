@@ -48,9 +48,9 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/jwt"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/env"
-	"github.com/minio/pkg/v3/ldap"
-	"github.com/minio/pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/ldap"
+	"github.com/pgsty/silo-pkg/v3/policy"
 	etcd "go.etcd.io/etcd/client/v3"
 	"golang.org/x/sync/singleflight"
 )

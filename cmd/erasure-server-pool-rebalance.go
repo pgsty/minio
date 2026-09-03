@@ -39,8 +39,8 @@ import (
 	"github.com/minio/minio/internal/hash"
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/env"
-	"github.com/minio/pkg/v3/workers"
+	"github.com/pgsty/silo-pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/workers"
 )
 
 //go:generate msgp -file $GOFILE -unexported

@@ -28,7 +28,7 @@ import (
 	"strings"
 
 	"github.com/minio/minio/internal/config"
-	"github.com/minio/pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/env"
 )
 
 var (

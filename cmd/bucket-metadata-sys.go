@@ -38,8 +38,8 @@ import (
 	"github.com/minio/minio/internal/event"
 	"github.com/minio/minio/internal/kms"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/policy"
-	"github.com/minio/pkg/v3/sync/errgroup"
+	"github.com/pgsty/silo-pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
 

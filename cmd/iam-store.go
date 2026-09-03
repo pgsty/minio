@@ -37,9 +37,9 @@ import (
 	"github.com/minio/minio/internal/config"
 	"github.com/minio/minio/internal/config/identity/openid"
 	"github.com/minio/minio/internal/jwt"
-	"github.com/minio/pkg/v3/env"
-	"github.com/minio/pkg/v3/policy"
-	"github.com/minio/pkg/v3/sync/errgroup"
+	"github.com/pgsty/silo-pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/sync/errgroup"
 	"github.com/puzpuzpuz/xsync/v3"
 	"golang.org/x/sync/singleflight"
 )

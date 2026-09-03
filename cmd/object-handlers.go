@@ -62,7 +62,7 @@ import (
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/minio/internal/s3select"
 	"github.com/minio/mux"
-	"github.com/minio/pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/policy"
 )
 
 // supportedHeadGetReqParams - supported request parameters for GET and HEAD presigned request.

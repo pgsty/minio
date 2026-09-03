@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
-	"github.com/minio/pkg/v3/wildcard"
+	"github.com/pgsty/silo-pkg/v3/wildcard"
 	"go.yaml.in/yaml/v3"
 )
 

@@ -43,9 +43,9 @@ import (
 	"github.com/minio/minio/internal/config/storageclass"
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/sync/errgroup"
-	"github.com/minio/pkg/v3/wildcard"
-	"github.com/minio/pkg/v3/workers"
+	"github.com/pgsty/silo-pkg/v3/sync/errgroup"
+	"github.com/pgsty/silo-pkg/v3/wildcard"
+	"github.com/pgsty/silo-pkg/v3/workers"
 	"github.com/puzpuzpuz/xsync/v3"
 )
 

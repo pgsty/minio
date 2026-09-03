@@ -36,7 +36,7 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/minio/internal/rest"
-	xnet "github.com/minio/pkg/v3/net"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 )
 
 // client to talk to peer Nodes.

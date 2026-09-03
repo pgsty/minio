@@ -48,10 +48,10 @@ import (
 	"github.com/minio/minio/internal/hash"
 	xhttp "github.com/minio/minio/internal/http"
 	xioutil "github.com/minio/minio/internal/ioutil"
-	"github.com/minio/pkg/v3/console"
-	"github.com/minio/pkg/v3/env"
-	"github.com/minio/pkg/v3/policy"
-	"github.com/minio/pkg/v3/workers"
+	"github.com/pgsty/silo-pkg/v3/console"
+	"github.com/pgsty/silo-pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/workers"
 	"go.yaml.in/yaml/v3"
 )
 

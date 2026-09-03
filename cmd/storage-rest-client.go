@@ -39,7 +39,7 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/rest"
-	xnet "github.com/minio/pkg/v3/net"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 	xbufio "github.com/philhofer/fwd"
 	"github.com/tinylib/msgp/msgp"
 )

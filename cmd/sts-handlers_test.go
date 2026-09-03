@@ -43,7 +43,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio-go/v7/pkg/tags"
 	xhttp "github.com/minio/minio/internal/http"
-	"github.com/minio/pkg/v3/ldap"
+	"github.com/pgsty/silo-pkg/v3/ldap"
 )
 
 func runAllIAMSTSTests(suite *TestSuiteIAM, c *check) {

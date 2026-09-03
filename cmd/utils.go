@@ -62,9 +62,9 @@ import (
 	"github.com/minio/minio/internal/logger/message/audit"
 	"github.com/minio/minio/internal/rest"
 	"github.com/minio/mux"
-	"github.com/minio/pkg/v3/certs"
-	"github.com/minio/pkg/v3/env"
-	xnet "github.com/minio/pkg/v3/net"
+	"github.com/pgsty/silo-pkg/v3/certs"
+	"github.com/pgsty/silo-pkg/v3/env"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 	"golang.org/x/oauth2"
 )
 

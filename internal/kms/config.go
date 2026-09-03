@@ -36,9 +36,9 @@ import (
 	"aead.dev/mtls"
 	"github.com/minio/kms-go/kes"
 	"github.com/minio/kms-go/kms"
-	"github.com/minio/pkg/v3/certs"
-	"github.com/minio/pkg/v3/ellipses"
-	"github.com/minio/pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/certs"
+	"github.com/pgsty/silo-pkg/v3/ellipses"
+	"github.com/pgsty/silo-pkg/v3/env"
 )
 
 // Environment variables for MinIO KMS.

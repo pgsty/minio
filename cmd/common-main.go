@@ -59,10 +59,10 @@ import (
 	"github.com/minio/minio/internal/handlers"
 	"github.com/minio/minio/internal/kms"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/certs"
-	"github.com/minio/pkg/v3/console"
-	"github.com/minio/pkg/v3/env"
-	xnet "github.com/minio/pkg/v3/net"
+	"github.com/pgsty/silo-pkg/v3/certs"
+	"github.com/pgsty/silo-pkg/v3/console"
+	"github.com/pgsty/silo-pkg/v3/env"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 	"golang.org/x/term"
 )
 

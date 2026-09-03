@@ -40,7 +40,7 @@ if [ -n "${MCLI_BIN:-}" ]; then
 	exit 0
 fi
 
-release=${MCLI_RELEASE:-RELEASE.2026-09-01T00-00-00Z}
+release=${MCLI_RELEASE:-RELEASE.2026-09-03T07-13-05Z}
 version_hyphen=${release#RELEASE.}
 package_version=$(printf '%s\n' "${version_hyphen}" | sed -E 's/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2})-([0-9]{2})-([0-9]{2})Z$/\1\2\3\4\5\6.0.0/')
 if [ "${package_version}" = "${version_hyphen}" ]; then
@@ -74,7 +74,7 @@ expected=$(awk -v asset="${archive}" '
 	{
 		name=$2
 		sub(/^\*/, "", name)
-		if (name == asset && $1 ~ /^[0-9a-fA-F]{64}$/) print tolower($1)
+		if (name == asset && length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/) print tolower($1)
 	}
 ' "${tmp_dir}/${checksums}")
 if ! printf '%s\n' "${expected}" | grep -Eq '^[0-9a-f]{64}$'; then

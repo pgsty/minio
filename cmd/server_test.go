@@ -44,7 +44,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio-go/v7/pkg/signer"
 	xhttp "github.com/minio/minio/internal/http"
-	"github.com/minio/pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/policy"
 )
 
 // API suite container common to both ErasureSD and Erasure.

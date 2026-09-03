@@ -30,7 +30,7 @@ import (
 	hashpkg "github.com/minio/minio/internal/hash"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/mux"
-	"github.com/minio/pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/policy"
 )
 
 // maxBucketCorsSize is the maximum allowed size of a CORS configuration document.

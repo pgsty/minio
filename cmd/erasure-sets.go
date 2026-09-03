@@ -37,8 +37,8 @@ import (
 	"github.com/minio/minio-go/v7/pkg/tags"
 	"github.com/minio/minio/internal/dsync"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/console"
-	"github.com/minio/pkg/v3/sync/errgroup"
+	"github.com/pgsty/silo-pkg/v3/console"
+	"github.com/pgsty/silo-pkg/v3/sync/errgroup"
 	"github.com/puzpuzpuz/xsync/v3"
 )
 

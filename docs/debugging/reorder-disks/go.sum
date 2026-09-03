@@ -1,2 +1,2 @@
-github.com/minio/pkg/v3 v3.0.1 h1:qts6g9rYjAdeomRdwjnMc1IaQ6KbaJs3dwqBntXziaw=
-github.com/minio/pkg/v3 v3.0.1/go.mod h1:53gkSUVHcfYoskOs5YAJ3D99nsd2SKru90rdE9whlXU=
+github.com/pgsty/silo-pkg/v3 v3.13.2 h1:Clw11c/J54Tx6pijNCWtXiC7e0fwP/f5Tgeb6fsXg2w=
+github.com/pgsty/silo-pkg/v3 v3.13.2/go.mod h1:0GmaDA0ArQ8bkAI/obiSNTBQzdgBu6W0e0olDCbyXXo=

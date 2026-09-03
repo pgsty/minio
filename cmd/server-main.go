@@ -54,8 +54,8 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/certs"
-	"github.com/minio/pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/certs"
+	"github.com/pgsty/silo-pkg/v3/env"
 	"gopkg.in/yaml.v2"
 )
 

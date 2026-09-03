@@ -37,8 +37,8 @@ import (
 	"github.com/minio/minio/internal/config"
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/minio/internal/mountinfo"
-	"github.com/minio/pkg/v3/env"
-	xnet "github.com/minio/pkg/v3/net"
+	"github.com/pgsty/silo-pkg/v3/env"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 )
 
 // EndpointType - enum for endpoint type.

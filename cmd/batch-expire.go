@@ -33,10 +33,10 @@ import (
 	"github.com/minio/minio/internal/bucket/versioning"
 	xhttp "github.com/minio/minio/internal/http"
 	xioutil "github.com/minio/minio/internal/ioutil"
-	"github.com/minio/pkg/v3/env"
-	"github.com/minio/pkg/v3/wildcard"
-	"github.com/minio/pkg/v3/workers"
-	"github.com/minio/pkg/v3/xtime"
+	"github.com/pgsty/silo-pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/wildcard"
+	"github.com/pgsty/silo-pkg/v3/workers"
+	"github.com/pgsty/silo-pkg/v3/xtime"
 	"go.yaml.in/yaml/v3"
 )
 

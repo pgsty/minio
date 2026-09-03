@@ -27,7 +27,7 @@ import (
 	jwtreq "github.com/golang-jwt/jwt/v4/request"
 	"github.com/minio/minio/internal/auth"
 	xjwt "github.com/minio/minio/internal/jwt"
-	"github.com/minio/pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/policy"
 )
 
 const (

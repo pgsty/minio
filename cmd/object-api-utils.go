@@ -49,8 +49,8 @@ import (
 	xhttp "github.com/minio/minio/internal/http"
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/trie"
-	"github.com/minio/pkg/v3/wildcard"
+	"github.com/pgsty/silo-pkg/v3/trie"
+	"github.com/pgsty/silo-pkg/v3/wildcard"
 	"github.com/valyala/bytebufferpool"
 )
 

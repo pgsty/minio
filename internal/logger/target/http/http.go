@@ -38,7 +38,7 @@ import (
 	types "github.com/minio/minio/internal/logger/target/loggertypes"
 	"github.com/minio/minio/internal/once"
 	"github.com/minio/minio/internal/store"
-	xnet "github.com/minio/pkg/v3/net"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 	"github.com/valyala/bytebufferpool"
 )
 

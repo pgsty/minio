@@ -25,7 +25,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/minio/pkg/v3/certs"
+	"github.com/pgsty/silo-pkg/v3/certs"
 )
 
 // tlsClientSessionCacheSize is the cache size for client sessions.

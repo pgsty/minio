@@ -25,7 +25,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/minio/pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/env"
 )
 
 // EnvCertPassword is the environment variable which contains the password used

@@ -30,7 +30,7 @@ import (
 	"github.com/minio/minio/internal/logger/target/console"
 	types "github.com/minio/minio/internal/logger/target/loggertypes"
 	"github.com/minio/minio/internal/pubsub"
-	xnet "github.com/minio/pkg/v3/net"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 )
 
 // number of log messages to buffer

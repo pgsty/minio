@@ -35,7 +35,7 @@ import (
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/minio/minio/internal/kms"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/sync/errgroup"
+	"github.com/pgsty/silo-pkg/v3/sync/errgroup"
 	"github.com/puzpuzpuz/xsync/v3"
 )
 

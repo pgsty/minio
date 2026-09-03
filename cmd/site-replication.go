@@ -48,8 +48,8 @@ import (
 	sreplication "github.com/minio/minio/internal/bucket/replication"
 	"github.com/minio/minio/internal/bucket/versioning"
 	"github.com/minio/minio/internal/logger"
-	xldap "github.com/minio/pkg/v3/ldap"
-	"github.com/minio/pkg/v3/policy"
+	xldap "github.com/pgsty/silo-pkg/v3/ldap"
+	"github.com/pgsty/silo-pkg/v3/policy"
 	"github.com/puzpuzpuz/xsync/v3"
 )
 

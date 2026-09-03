@@ -22,7 +22,7 @@ import (
 
 	"github.com/minio/minio/internal/logger"
 	"github.com/minio/mux"
-	"github.com/minio/pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/policy"
 )
 
 // Data types used for returning dummy tagging XML.

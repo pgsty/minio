@@ -25,8 +25,8 @@ import (
 	"sync"
 
 	"github.com/minio/minio/internal/config"
-	"github.com/minio/pkg/v3/env"
-	xnet "github.com/minio/pkg/v3/net"
+	"github.com/pgsty/silo-pkg/v3/env"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 )
 
 // DefaultKVS - default KV config for subnet settings

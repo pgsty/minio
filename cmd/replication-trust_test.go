@@ -31,7 +31,7 @@ import (
 	"github.com/minio/minio/internal/crypto"
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/minio/internal/kms"
-	"github.com/minio/pkg/v3/policy"
+	"github.com/pgsty/silo-pkg/v3/policy"
 )
 
 func TestAPIReplicationTrustProtectsSSECReads(t *testing.T) {

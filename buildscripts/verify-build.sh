@@ -282,7 +282,6 @@ function main() {
 	purge "$WORK_DIR"
 }
 
-(__init__ "$@" && main "$@")
-rv=$?
-purge "$WORK_DIR"
-exit "$rv"
+trap 'purge "$WORK_DIR"' EXIT
+__init__ "$@"
+main "$@"

@@ -34,7 +34,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/minio/internal/grid"
 	"github.com/minio/minio/internal/logger"
-	"github.com/minio/pkg/v3/env"
+	"github.com/pgsty/silo-pkg/v3/env"
 )
 
 // To abstract a node over network.

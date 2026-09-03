@@ -36,7 +36,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio/internal/auth"
 	xioutil "github.com/minio/minio/internal/ioutil"
-	"github.com/minio/pkg/v3/mimedb"
+	"github.com/pgsty/silo-pkg/v3/mimedb"
 	ftp "goftp.io/server/v2"
 )
 

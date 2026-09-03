@@ -29,7 +29,7 @@ import (
 	bktcors "github.com/minio/minio/internal/bucket/cors"
 	xhttp "github.com/minio/minio/internal/http"
 	"github.com/minio/mux"
-	"github.com/minio/pkg/v3/wildcard"
+	"github.com/pgsty/silo-pkg/v3/wildcard"
 	"github.com/rs/cors"
 )
 

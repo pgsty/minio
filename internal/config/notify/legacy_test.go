@@ -24,7 +24,7 @@ import (
 
 	"github.com/minio/minio/internal/config"
 	"github.com/minio/minio/internal/event/target"
-	xnet "github.com/minio/pkg/v3/net"
+	xnet "github.com/pgsty/silo-pkg/v3/net"
 	"github.com/rabbitmq/amqp091-go"
 )
 
