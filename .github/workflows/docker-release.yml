@@ -7,6 +7,11 @@ on:
         description: "Published RELEASE.* tag to package as pgsty/silo"
         required: true
         type: string
+      recovery:
+        description: "Run the current main workflow against an already-published tag"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -75,12 +80,18 @@ jobs:
           fetch-depth: 0
 
       - name: Verify workflow identity matches release source
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RECOVERY: ${{ inputs.recovery }}
         run: |
           set -euo pipefail
           CHECKED_OUT_REVISION="$(git rev-parse HEAD)"
           if [ "${CHECKED_OUT_REVISION}" != "${GITHUB_SHA}" ]; then
-            echo "Checked out ${CHECKED_OUT_REVISION}, but workflow identity is ${GITHUB_SHA}. Dispatch this workflow from ${RELEASE_TAG}." >&2
-            exit 1
+            if [ "${RECOVERY}" != "true" ] || [ "${GITHUB_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+              echo "Checked out ${CHECKED_OUT_REVISION}, but workflow identity is ${GITHUB_SHA}. Dispatch from ${RELEASE_TAG}, or use recovery from ${DEFAULT_BRANCH}." >&2
+              exit 1
+            fi
+            echo "Recovery workflow ${GITHUB_SHA} is packaging published source ${CHECKED_OUT_REVISION}."
           fi
 
       - name: Prepare verified Docker contexts
@@ -133,6 +144,46 @@ jobs:
               "${context}/dockerscripts/"
           done
 
+          # The classic image bundles mcli. Resolve its two archive digests
+          # from the immutable published release instead of trusting defaults
+          # copied into an older Server tag. This also gives a recovery run a
+          # narrow override when a tag selected the right mcli release but
+          # accidentally retained stale archive pins.
+          MC_REPO="$(awk -F= '/^ARG MC_REPO=/{print $2; exit}' Dockerfile.goreleaser)"
+          MC_VERSION="$(awk -F= '/^ARG MC_VERSION=/{print $2; exit}' Dockerfile.goreleaser)"
+          test -n "${MC_REPO}"
+          test -n "${MC_VERSION}"
+          MC_VERSION_HYPHEN="${MC_VERSION#RELEASE.}"
+          MC_PKG_VERSION="$(echo "${MC_VERSION_HYPHEN}" | sed -E 's/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2})-([0-9]{2})-([0-9]{2})Z$/\1\2\3\4\5\6.0.0/')"
+          if [ "${MC_PKG_VERSION}" = "${MC_VERSION_HYPHEN}" ]; then
+            echo "Invalid bundled mcli tag: ${MC_VERSION}" >&2
+            exit 1
+          fi
+          if [ "$(gh release view "${MC_VERSION}" --repo "${MC_REPO}" --json isDraft --jq .isDraft)" != false ] || \
+             [ "$(gh release view "${MC_VERSION}" --repo "${MC_REPO}" --json isPrerelease --jq .isPrerelease)" != false ] || \
+             [ "$(gh release view "${MC_VERSION}" --repo "${MC_REPO}" --json isImmutable --jq .isImmutable)" != true ]; then
+            echo "Bundled mcli ${MC_REPO}@${MC_VERSION} must be a published immutable release" >&2
+            exit 1
+          fi
+
+          mc_checksums="mcli_${MC_PKG_VERSION}_checksums.txt"
+          gh release download "${MC_VERSION}" --repo "${MC_REPO}" \
+            --dir "${assets_dir}" --pattern "${mc_checksums}"
+          gh attestation verify "${assets_dir}/${mc_checksums}" \
+            --repo "${MC_REPO}" \
+            --signer-workflow "${MC_REPO}/.github/workflows/release.yml" \
+            --source-ref "refs/tags/${MC_VERSION}" >/dev/null
+
+          MC_AMD64_SHA256="$(awk -v name="mcli_${MC_PKG_VERSION}_linux_amd64.tar.gz" '$2 == name {print $1}' "${assets_dir}/${mc_checksums}")"
+          MC_ARM64_SHA256="$(awk -v name="mcli_${MC_PKG_VERSION}_linux_arm64.tar.gz" '$2 == name {print $1}' "${assets_dir}/${mc_checksums}")"
+          [[ "${MC_AMD64_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${MC_ARM64_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+
+          {
+            echo "MC_AMD64_SHA256=${MC_AMD64_SHA256}"
+            echo "MC_ARM64_SHA256=${MC_ARM64_SHA256}"
+          } >> "${GITHUB_ENV}"
+
           echo "RELEASE_REVISION=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
 
       - name: Set up QEMU
@@ -162,6 +213,9 @@ jobs:
           file: docker-release/amd64/Dockerfile.goreleaser
           platforms: linux/amd64
           push: true
+          build-args: |
+            MC_AMD64_SHA256=${{ env.MC_AMD64_SHA256 }}
+            MC_ARM64_SHA256=${{ env.MC_ARM64_SHA256 }}
           tags: |
             pgsty/silo:${{ env.RELEASE_TAG }}-amd64
             pgsty/silo:latest-amd64
@@ -178,6 +232,9 @@ jobs:
           file: docker-release/arm64/Dockerfile.goreleaser
           platforms: linux/arm64
           push: true
+          build-args: |
+            MC_AMD64_SHA256=${{ env.MC_AMD64_SHA256 }}
+            MC_ARM64_SHA256=${{ env.MC_ARM64_SHA256 }}
           tags: |
             pgsty/silo:${{ env.RELEASE_TAG }}-arm64
             pgsty/silo:latest-arm64
