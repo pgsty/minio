@@ -2,7 +2,7 @@ apiVersion: v1
 description: S3-Interface Libre Object Storage
 name: silo
 version: 7.0.2
-appVersion: RELEASE.2026-09-03T00-00-00Z
+appVersion: RELEASE.2026-09-03T13-18-01Z
 keywords:
   - silo
   - storage
