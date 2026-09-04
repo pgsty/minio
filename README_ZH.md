@@ -95,30 +95,42 @@ S3 API、`MINIO_*` 环境变量、`minio_*` 指标、`x-minio-*` 头、`/minio/*
 
 ## 贡献者
 
+上方卡片展示已合入 `main` 的社区贡献；下方头像墙收录其他所有提交过 issue 或 PR 的社区成员。
+
 <table>
   <tr>
     <td align="center" width="150">
-      <a href="https://github.com/ZouhairCharef"><img src="https://github.com/ZouhairCharef.png?size=100" width="72" alt="ZouhairCharef"><br><sub><b>@ZouhairCharef</b></sub></a><br><sub>CVE-2026-34986</sub>
+      <a href="https://github.com/h5vx"><img src="https://github.com/h5vx.png?size=100" width="72" alt="h5vx"><br><sub><b>@h5vx</b></sub></a><br><sub>单桶 CORS · <a href="https://github.com/pgsty/silo/pull/71">#71</a></sub>
     </td>
     <td align="center" width="150">
-      <a href="https://github.com/mfredenhagen"><img src="https://github.com/mfredenhagen.png?size=100" width="72" alt="mfredenhagen"><br><sub><b>@mfredenhagen</b></sub></a><br><sub>CVE-2026-39883</sub>
+      <a href="https://github.com/ycjlin"><img src="https://github.com/ycjlin.png?size=100" width="72" alt="ycjlin"><br><sub><b>@ycjlin</b></sub></a><br><sub>缺失桶列举语义 · <a href="https://github.com/pgsty/silo/pull/37">#37</a></sub>
     </td>
     <td align="center" width="150">
-      <a href="https://github.com/pinginfo"><img src="https://github.com/pinginfo.png?size=100" width="72" alt="pinginfo"><br><sub><b>@pinginfo</b></sub></a><br><sub>桶通知流式输出</sub>
+      <a href="https://github.com/Dansyuqri"><img src="https://github.com/Dansyuqri.png?size=100" width="72" alt="Dansyuqri"><br><sub><b>@Dansyuqri</b></sub></a><br><sub>分片上传校验类型 · <a href="https://github.com/pgsty/silo/pull/57">#57</a></sub>
     </td>
     <td align="center" width="150">
-      <a href="https://github.com/waterkip"><img src="https://github.com/waterkip.png?size=100" width="72" alt="waterkip"><br><sub><b>@waterkip</b></sub></a><br><sub>文档链接修正</sub>
+      <a href="https://github.com/pinginfo"><img src="https://github.com/pinginfo.png?size=100" width="72" alt="pinginfo"><br><sub><b>@pinginfo</b></sub></a><br><sub>桶通知流式输出 · <a href="https://github.com/pgsty/silo/pull/34">#34</a></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="150">
+      <a href="https://github.com/ZouhairCharef"><img src="https://github.com/ZouhairCharef.png?size=100" width="72" alt="ZouhairCharef"><br><sub><b>@ZouhairCharef</b></sub></a><br><sub>CVE-2026-34986 · <a href="https://github.com/pgsty/silo/pull/18">#18</a></sub>
+    </td>
+    <td align="center" width="150">
+      <a href="https://github.com/mfredenhagen"><img src="https://github.com/mfredenhagen.png?size=100" width="72" alt="mfredenhagen"><br><sub><b>@mfredenhagen</b></sub></a><br><sub>CVE-2026-39883 · <a href="https://github.com/pgsty/silo/pull/19">#19</a></sub>
+    </td>
+    <td align="center" width="150">
+      <a href="https://github.com/waterkip"><img src="https://github.com/waterkip.png?size=100" width="72" alt="waterkip"><br><sub><b>@waterkip</b></sub></a><br><sub>文档链接修正 · <a href="https://github.com/pgsty/silo/pull/41">#41</a></sub>
     </td>
   </tr>
 </table>
 <p>
 <a href="https://github.com/magicxor"><img src="https://github.com/magicxor.png?size=64" width="44" alt="magicxor" title="@magicxor"></a>
-<a href="https://github.com/ycjlin"><img src="https://github.com/ycjlin.png?size=64" width="44" alt="ycjlin" title="@ycjlin"></a>
-<a href="https://github.com/h5vx"><img src="https://github.com/h5vx.png?size=64" width="44" alt="h5vx" title="@h5vx"></a>
-<a href="https://github.com/Dansyuqri"><img src="https://github.com/Dansyuqri.png?size=64" width="44" alt="Dansyuqri" title="@Dansyuqri"></a>
 <a href="https://github.com/davinkevin"><img src="https://github.com/davinkevin.png?size=64" width="44" alt="davinkevin" title="@davinkevin"></a>
 <a href="https://github.com/lem21h"><img src="https://github.com/lem21h.png?size=64" width="44" alt="lem21h" title="@lem21h"></a>
 <a href="https://github.com/sulin37392"><img src="https://github.com/sulin37392.png?size=64" width="44" alt="sulin37392" title="@sulin37392"></a>
+<a href="https://github.com/metaneutrons"><img src="https://github.com/metaneutrons.png?size=64" width="44" alt="metaneutrons" title="@metaneutrons"></a>
+<a href="https://github.com/mrjavadseydi"><img src="https://github.com/mrjavadseydi.png?size=64" width="44" alt="mrjavadseydi" title="@mrjavadseydi"></a>
 <a href="https://github.com/mosesdd"><img src="https://github.com/mosesdd.png?size=64" width="44" alt="mosesdd" title="@mosesdd"></a>
 <a href="https://github.com/Xavier-777"><img src="https://github.com/Xavier-777.png?size=64" width="44" alt="Xavier-777" title="@Xavier-777"></a>
 <a href="https://github.com/jiadzh"><img src="https://github.com/jiadzh.png?size=64" width="44" alt="jiadzh" title="@jiadzh"></a>
@@ -139,9 +151,13 @@ S3 API、`MINIO_*` 环境变量、`minio_*` 指标、`x-minio-*` 头、`/minio/*
 <a href="https://github.com/meesudzu"><img src="https://github.com/meesudzu.png?size=64" width="44" alt="meesudzu" title="@meesudzu"></a>
 <a href="https://github.com/pmezhuev"><img src="https://github.com/pmezhuev.png?size=64" width="44" alt="pmezhuev" title="@pmezhuev"></a>
 <a href="https://github.com/kh0mka"><img src="https://github.com/kh0mka.png?size=64" width="44" alt="kh0mka" title="@kh0mka"></a>
+<a href="https://github.com/bagutzu"><img src="https://github.com/bagutzu.png?size=64" width="44" alt="bagutzu" title="@bagutzu"></a>
+<a href="https://github.com/liuhaodongliu990-cmyk"><img src="https://github.com/liuhaodongliu990-cmyk.png?size=64" width="44" alt="liuhaodongliu990-cmyk" title="@liuhaodongliu990-cmyk"></a>
+<a href="https://github.com/sargarass"><img src="https://github.com/sargarass.png?size=64" width="44" alt="sargarass" title="@sargarass"></a>
+<a href="https://github.com/mumu-lab"><img src="https://github.com/mumu-lab.png?size=64" width="44" alt="mumu-lab" title="@mumu-lab"></a>
 </p>
 
-GitHub 不为 fork 仓库生成贡献者图表，因此 [`CONTRIBUTORS.md`](CONTRIBUTORS.md)（而非 Insights 页面）才是本项目的署名记录，其中逐一记录了每个人对应的改动或报告。
+GitHub 不为 fork 仓库生成贡献者图表，因此 [`CONTRIBUTORS.md`](CONTRIBUTORS.md)（而非 Insights 页面）才是本项目的署名记录，其中逐一记录了全部 37 位社区贡献者对应的改动或报告。
 
 ## 背景
 
