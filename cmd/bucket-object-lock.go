@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/minio/minio/internal/amztime"
 	"github.com/minio/minio/internal/auth"
 	objectlock "github.com/minio/minio/internal/bucket/object/lock"
 	xhttp "github.com/minio/minio/internal/http"
@@ -406,4 +407,117 @@ func (s objectLockState) restoreLegalHold(metadata map[string]string) {
 		return
 	}
 	metadata[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = s.legalHold
+}
+
+// replicaStoredLock reads the Object Lock state stored on the addressed version
+// so a trusted replica write can order its update against it. A missing object
+// or version yields an empty state, which is correct for the first write of a
+// version; any other read error is returned so the caller fails the write rather
+// than ordering an incoming update against lock state it merely failed to read
+// (an older incoming value must not win over a newer stored one just because the
+// read timed out).
+func replicaStoredLock(ctx context.Context, getObjectInfo GetObjectInfoFn, bucket, object, versionID string) (objectLockState, error) {
+	oi, err := getObjectInfo(ctx, bucket, object, ObjectOptions{VersionID: versionID})
+	switch {
+	case err == nil:
+		return storedObjectLockState(oi.UserDefined), nil
+	case isErrObjectNotFound(err) || isErrVersionNotFound(err):
+		return objectLockState{}, nil
+	default:
+		return objectLockState{}, err
+	}
+}
+
+// applyReplicatedObjectLock writes the retention and legal-hold decision into
+// metadata for a PUT, CopyObject, or multipart-initiation request. A request
+// that is not an actual trusted replica -- a normal user write, or a trusted
+// peer that carried the replication marker without REPLICA status -- takes
+// ordinary write semantics: a validated value is applied and stamped now, and a
+// missing value is left as is. Only an actual replica update is ordered against
+// the state already stored on the addressed version, so a stale value cannot
+// overwrite a newer one and a full retransmit cannot roll a destination back.
+// The stored argument is meaningful only for a replica; callers pass an empty
+// state otherwise. Only the two Object Lock keys and their reserved ordering
+// timestamps are touched; any encryption-metadata reconciliation stays with the
+// caller.
+func applyReplicatedObjectLock(metadata map[string]string, stored objectLockState,
+	replicaTrusted bool,
+	retentionMode objectlock.RetMode, retentionDate objectlock.RetentionDate,
+	legalHold objectlock.ObjectLegalHold, srcRetentionTimestamp, srcLegalholdTimestamp time.Time,
+) {
+	switch {
+	case !replicaTrusted:
+		// Ordinary write semantics: apply a validated retention and stamp it now;
+		// a missing value carries no instruction, so leave the metadata as it is.
+		if retentionMode.Valid() {
+			metadata[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
+			metadata[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
+			metadata[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = UTCNow().Format(time.RFC3339Nano)
+		}
+	case !stored.retentionIsOlderThan(srcRetentionTimestamp):
+		// The stored update is at least as new as this replica's, or the replica
+		// carries no ordering timestamp: keep what is stored. This is also how a
+		// stale retransmit is rejected.
+		stored.restoreRetention(metadata)
+	default:
+		// The replica update wins. A removal carries no value but still records
+		// the source timestamp that orders it.
+		if retentionMode.Valid() {
+			metadata[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
+			metadata[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
+		}
+		metadata[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = srcRetentionTimestamp.UTC().Format(time.RFC3339Nano)
+	}
+
+	// Legal hold has no removal in S3: an explicitly empty header is already
+	// rejected as an invalid status, so the only value-less shape that gets here
+	// is an absent one, which conveys no legal-hold change. Only a valid status
+	// can win.
+	switch {
+	case !replicaTrusted:
+		if legalHold.Status.Valid() {
+			metadata[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
+			metadata[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp] = UTCNow().Format(time.RFC3339Nano)
+		}
+	case legalHold.Status.Valid() && stored.legalHoldIsOlderThan(srcLegalholdTimestamp):
+		metadata[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
+		metadata[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp] = srcLegalholdTimestamp.UTC().Format(time.RFC3339Nano)
+	default:
+		stored.restoreLegalHold(metadata)
+	}
+}
+
+// reconcileStoredObjectLock re-orders the Object Lock already written into
+// metadata against the state currently stored on the destination version, both
+// compared by their reserved ordering timestamps. It runs inside the object
+// layer under the namespace write lock that guards the version replacement,
+// after the destination version is read and before the new one is committed, so
+// a replica update whose ordering was decided at handler time (or, for multipart,
+// at initiation) cannot overwrite a newer lock update that reached the version in
+// between. metadata already carries the incoming update with its source
+// timestamps; a stored value that is not older than the incoming one is put back,
+// which for a stored removal means clearing the incoming value and keeping only
+// the removal's timestamp. Only the two lock keys and their reserved timestamps
+// move; a non-replica write never sets the flag that invokes this.
+func reconcileStoredObjectLock(metadata map[string]string, stored objectLockState) {
+	incoming := storedObjectLockState(metadata)
+
+	incomingRetentionTS, _ := time.Parse(time.RFC3339Nano, incoming.retentionTimestamp)
+	if !stored.retentionIsOlderThan(incomingRetentionTS) {
+		// The stored retention is at least as new as the incoming one (or the
+		// incoming update is unordered): drop the incoming value and put the stored
+		// state back, which may itself be a removal (value keys absent, timestamp
+		// present).
+		delete(metadata, strings.ToLower(xhttp.AmzObjectLockMode))
+		delete(metadata, strings.ToLower(xhttp.AmzObjectLockRetainUntilDate))
+		delete(metadata, ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp)
+		stored.restoreRetention(metadata)
+	}
+
+	incomingLegalHoldTS, _ := time.Parse(time.RFC3339Nano, incoming.legalHoldTimestamp)
+	if incoming.legalHold == "" || !stored.legalHoldIsOlderThan(incomingLegalHoldTS) {
+		delete(metadata, strings.ToLower(xhttp.AmzObjectLockLegalHold))
+		delete(metadata, ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp)
+		stored.restoreLegalHold(metadata)
+	}
 }

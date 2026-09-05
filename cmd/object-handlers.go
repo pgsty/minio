@@ -1771,50 +1771,9 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	// apply default bucket configuration/governance headers for dest side.
 	retentionMode, retentionDate, legalHold, s3Err := checkPutObjectLockAllowed(ctx, r, dstBucket, dstObject, getObjectInfo, retPerms, holdPerms, replicaTrusted)
 	if s3Err == ErrNone {
-		// A replica update is ordered by its source timestamp alone, whether or
-		// not it still carries a value: an update newer than the stored state
-		// applies, and a removal is just an update with no value. An update that
-		// is stale, or that carries no source timestamp at all and is therefore
-		// unordered, leaves the stored state in place instead of erasing it.
-		switch {
-		case !dstOpts.ReplicationRequest:
-			if retentionMode.Valid() {
-				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
-				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
-				srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = UTCNow().Format(time.RFC3339Nano)
-			}
-		case !replicaTrusted && !retentionMode.Valid():
-			// A trusted peer that did not mark this request as a replica sends
-			// no replicated state, so a missing value carries no instruction and
-			// the rebuilt metadata is left as it is.
-		case !storedLock.retentionIsOlderThan(dstOpts.ReplicationSourceRetentionTimestamp):
-			storedLock.restoreRetention(srcInfo.UserDefined)
-		default:
-			if retentionMode.Valid() {
-				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
-				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
-			}
-			srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp] = dstOpts.ReplicationSourceRetentionTimestamp.UTC().Format(time.RFC3339Nano)
-		}
-
-		// Legal hold has no removal in S3: an explicitly empty header is already
-		// rejected as an invalid status, so the only value-less shape that gets
-		// here is an absent one, and that conveys no legal-hold change even when
-		// an orphaned timestamp comes with it. Only a valid status can win.
-		switch {
-		case !dstOpts.ReplicationRequest:
-			if legalHold.Status.Valid() {
-				srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
-				srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp] = UTCNow().Format(time.RFC3339Nano)
-			}
-		case !replicaTrusted && !legalHold.Status.Valid():
-			// As above: a marker-only request carries no legal-hold update.
-		case legalHold.Status.Valid() && storedLock.legalHoldIsOlderThan(dstOpts.ReplicationSourceLegalholdTimestamp):
-			srcInfo.UserDefined[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
-			srcInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockLegalHoldTimestamp] = dstOpts.ReplicationSourceLegalholdTimestamp.UTC().Format(time.RFC3339Nano)
-		default:
-			storedLock.restoreLegalHold(srcInfo.UserDefined)
-		}
+		applyReplicatedObjectLock(srcInfo.UserDefined, storedLock, replicaTrusted,
+			retentionMode, retentionDate, legalHold,
+			dstOpts.ReplicationSourceRetentionTimestamp, dstOpts.ReplicationSourceLegalholdTimestamp)
 
 		if replicaTrusted {
 			// An SSE-C key rotation snapshots every stored reserved key into
@@ -2282,12 +2241,31 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 	getObjectInfo := objectAPI.GetObjectInfo
 
 	retentionMode, retentionDate, legalHold, s3Err := checkPutObjectLockAllowed(ctx, r, bucket, object, getObjectInfo, retPerms, holdPerms, isReplicaTrusted(ctx))
-	if s3Err == ErrNone && retentionMode.Valid() {
-		metadata[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
-		metadata[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
-	}
-	if s3Err == ErrNone && legalHold.Status.Valid() {
-		metadata[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
+	if s3Err == ErrNone {
+		// A trusted replica write addressing a specific version can be a full
+		// retransmit over an existing version whose lock state is newer than the
+		// source snapshot (issue #120). Order the incoming update against what is
+		// stored so a stale value cannot overwrite it; a non-replica write (and a
+		// marker-only peer write) has no stored state to order against and takes
+		// the helper's ordinary-write branch.
+		var storedLock objectLockState
+		if isReplicaTrusted(ctx) && opts.VersionID != "" {
+			var lerr error
+			if storedLock, lerr = replicaStoredLock(ctx, getObjectInfo, bucket, object, opts.VersionID); lerr != nil {
+				writeErrorResponse(ctx, w, toAPIError(ctx, lerr), r.URL)
+				return
+			}
+		}
+		applyReplicatedObjectLock(metadata, storedLock, isReplicaTrusted(ctx),
+			retentionMode, retentionDate, legalHold,
+			opts.ReplicationSourceRetentionTimestamp, opts.ReplicationSourceLegalholdTimestamp)
+		// The decision above orders against the version as read here; let the
+		// object layer re-run it against the version read under the write lock
+		// that guards the replacement, so a newer hold or retention committed in
+		// between is not rolled back (issue #120). Scoped to the SSE-C replica
+		// retransmit this issue enables, keyed on the incoming write's restored
+		// SSE-C seal, the same predicate as the duplicate-version exemption.
+		opts.ReplicaLockReconcile = isReplicaTrusted(ctx) && opts.VersionID != "" && crypto.SSEC.IsEncrypted(metadata)
 	}
 	if s3Err != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)

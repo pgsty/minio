@@ -34,7 +34,6 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/encrypt"
 	"github.com/minio/minio-go/v7/pkg/tags"
-	"github.com/minio/minio/internal/amztime"
 	sse "github.com/minio/minio/internal/bucket/encryption"
 	objectlock "github.com/minio/minio/internal/bucket/object/lock"
 	"github.com/minio/minio/internal/bucket/replication"
@@ -260,12 +259,32 @@ func (api objectAPIHandlers) NewMultipartUploadHandler(w http.ResponseWriter, r 
 	getObjectInfo := objectAPI.GetObjectInfo
 
 	retentionMode, retentionDate, legalHold, s3Err := checkPutObjectLockAllowed(ctx, r, bucket, object, getObjectInfo, retPerms, holdPerms, replicaTrusted)
-	if s3Err == ErrNone && retentionMode.Valid() {
-		metadata[strings.ToLower(xhttp.AmzObjectLockMode)] = string(retentionMode)
-		metadata[strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)] = amztime.ISO8601Format(retentionDate.UTC())
-	}
-	if s3Err == ErrNone && legalHold.Status.Valid() {
-		metadata[strings.ToLower(xhttp.AmzObjectLockLegalHold)] = string(legalHold.Status)
+	if s3Err == ErrNone {
+		// A trusted replica NewMultipartUpload addressing a specific version can
+		// be a full retransmit over an existing version whose lock state is newer
+		// than the source snapshot (issue #120). Order the incoming update against
+		// what is stored so a stale value cannot overwrite it. opts is built below
+		// (its ServerSideEncryption depends on the encMetadata merge that has not
+		// happened yet), so read the replica ordering inputs the way
+		// putOptsFromHeaders will; a malformed timestamp fails the request when
+		// opts is built, so a parse error here is left as a zero time.
+		var (
+			storedLock                     objectLockState
+			srcRetentionTS, srcLegalholdTS time.Time
+		)
+		if replicaTrusted {
+			srcRetentionTS, _ = time.Parse(time.RFC3339, strings.TrimSpace(r.Header.Get(xhttp.MinIOSourceObjectRetentionTimestamp)))
+			srcLegalholdTS, _ = time.Parse(time.RFC3339, strings.TrimSpace(r.Header.Get(xhttp.MinIOSourceObjectLegalHoldTimestamp)))
+			if versionID := strings.TrimSpace(r.Form.Get(xhttp.VersionID)); versionID != "" {
+				var lerr error
+				if storedLock, lerr = replicaStoredLock(ctx, getObjectInfo, bucket, object, versionID); lerr != nil {
+					writeErrorResponse(ctx, w, toAPIError(ctx, lerr), r.URL)
+					return
+				}
+			}
+		}
+		applyReplicatedObjectLock(metadata, storedLock, replicaTrusted,
+			retentionMode, retentionDate, legalHold, srcRetentionTS, srcLegalholdTS)
 	}
 	if s3Err != ErrNone {
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
@@ -1166,6 +1185,14 @@ func (api objectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 	}
 	opts.Versioned = versioned
 	opts.VersionSuspended = suspended
+	// A replicated multipart completion carries the internal replication marker
+	// (the sender does not re-assert REPLICA status on Complete, so this is keyed
+	// on trusted replication, matching completeMultipartOpts). The object layer
+	// re-orders the Object Lock it carries against the destination version read
+	// under the write lock, but only for an SSE-C upload -- the scope this issue
+	// enables -- so a marker-only non-SSE-C completion keeps ordinary write
+	// semantics (issue #120).
+	opts.ReplicaLockReconcile = trustedReplication
 
 	// First, we compute the ETag of the multipart object.
 	// The ETag of a multi-part object is always:

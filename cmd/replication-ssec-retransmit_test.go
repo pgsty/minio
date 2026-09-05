@@ -12,6 +12,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/xml"
@@ -789,6 +790,1005 @@ func testAPISSECReplicaWriteExemptionIsKeyedOnTheIncomingWrite(obj ObjectLayer, 
 		if getRec.Code != http.StatusOK || !bytes.Equal(getRec.Body.Bytes(), data) {
 			t.Fatalf("%s: the retransmitted version does not read back with the customer key: %d (%d bytes)",
 				instanceType, getRec.Code, getRec.Body.Len())
+		}
+	})
+}
+
+// Retain-until values in the millisecond form ISO8601Format round-trips to, so
+// a value applied through the handler reads back byte-for-byte.
+const (
+	retransmitRetainUntilNewer = "2031-01-01T00:00:00.000Z"
+	retransmitRetainUntilStale = "2028-01-01T00:00:00.000Z"
+)
+
+// TestAPISSECReplicaRetransmitObjectLockOrdering proves that the full SSE-C
+// replica retransmit orders the Object Lock update it carries against the state
+// already stored on the addressed version, the same way the metadata CopyObject
+// path does. Before issue #120 routed these writes through PutObjectHandler the
+// handler applied the incoming retention and legal hold directly and never
+// persisted the ordering timestamps, so a retransmit carrying an older value
+// could overwrite a destination version's newer one. See pgsty/silo#120.
+func TestAPISSECReplicaRetransmitObjectLockOrdering(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testAPISSECReplicaRetransmitObjectLockOrdering,
+		makeBucketOptions: MakeBucketOptions{LockEnabled: true},
+	})
+}
+
+func testAPISSECReplicaRetransmitObjectLockOrdering(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	previousTLS := globalIsTLS
+	globalIsTLS = true
+	defer func() { globalIsTLS = previousTLS }()
+
+	key := bytes.Repeat([]byte{0x45}, 32)
+	keyMD5 := md5.Sum(key)
+	sseHeaders := map[string]string{
+		xhttp.AmzServerSideEncryptionCustomerAlgorithm: xhttp.AmzEncryptionAES,
+		xhttp.AmzServerSideEncryptionCustomerKey:       base64.StdEncoding.EncodeToString(key),
+		xhttp.AmzServerSideEncryptionCustomerKeyMD5:    base64.StdEncoding.EncodeToString(keyMD5[:]),
+	}
+
+	// seed writes a fresh SSE-C source version with no Object Lock state and
+	// returns its version id.
+	seed := func(t *testing.T, object string) string {
+		t.Helper()
+		putCopyChecksumSource(t, apiRouter, credentials, bucketName, object,
+			bytes.Repeat([]byte("ssec-lock-ordering-"), 64), sseHeaders)
+		info, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.VersionID
+	}
+
+	// retransmit sends the full SSE-C replica retransmit the sender emits for the
+	// addressed version, over its raw ciphertext, carrying exactly the given
+	// Object Lock headers on top of the replica seal. The credential is the admin
+	// user so the retention and legal-hold permission checks pass; the request is
+	// still a trusted replica because it carries the marker and REPLICA status.
+	retransmit := func(t *testing.T, object, versionID string, lockHeaders map[string]string) {
+		t.Helper()
+		gr, err := obj.GetObjectNInfo(t.Context(), bucketName, object, nil, http.Header{}, ObjectOptions{
+			ReplicationRequest: true,
+			VersionID:          versionID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srcInfo := gr.ObjInfo
+		cipher, err := io.ReadAll(gr)
+		gr.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts, _, err := putReplicationOpts(t.Context(), "", srcInfo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.Internal.SourceMTime = time.Time{}
+		hdrs := make(map[string]string)
+		for name, values := range opts.Header() {
+			if len(values) > 0 {
+				hdrs[name] = values[0]
+			}
+		}
+		hdrs[xhttp.MinIOSourceReplicationRequest] = "true"
+		hdrs[xhttp.AmzBucketReplicationStatus] = "REPLICA"
+		hdrs[xhttp.MinIOSourceETag] = srcInfo.ETag
+		// The case owns the lock instruction: drop any lock header the sender
+		// derived from the source version.
+		for _, name := range []string{
+			xhttp.AmzObjectLockMode, xhttp.AmzObjectLockRetainUntilDate, xhttp.AmzObjectLockLegalHold,
+			xhttp.MinIOSourceObjectRetentionTimestamp, xhttp.MinIOSourceObjectLegalHoldTimestamp,
+		} {
+			delete(hdrs, name)
+		}
+		maps.Copy(hdrs, lockHeaders)
+
+		req, err := newTestSignedRequestV4(http.MethodPut,
+			getPutObjectURL("", bucketName, object)+"?versionId="+versionID, int64(len(cipher)),
+			bytes.NewReader(cipher), credentials.AccessKey, credentials.SecretKey, hdrs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: replica retransmit PUT status %d, want 200: %s", instanceType, rec.Code, rec.Body.String())
+		}
+	}
+
+	t.Run("older-legal-hold-off-does-not-clear-newer-on", func(t *testing.T) {
+		object := "ssec-lock-ordering/legal-hold"
+		versionID := seed(t, object)
+
+		// Establish the newer legal hold ON. Its timestamp persistence is proven
+		// by the retention sibling test, so here only require the value took
+		// effect before the older OFF arrives, so the clobber below is what tells
+		// a fixed handler from a broken one.
+		retransmit(t, object, versionID, map[string]string{
+			xhttp.AmzObjectLockLegalHold:              "ON",
+			xhttp.MinIOSourceObjectLegalHoldTimestamp: objectLockTestStamp1000,
+		})
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got.legalHold != "ON" {
+			t.Fatalf("%s: seeding legal hold ON failed: got %+v", instanceType, got)
+		}
+
+		// A retransmit carrying an older legal-hold OFF must not clear it.
+		retransmit(t, object, versionID, map[string]string{
+			xhttp.AmzObjectLockLegalHold:              "OFF",
+			xhttp.MinIOSourceObjectLegalHoldTimestamp: objectLockTestStamp0900,
+		})
+		want := objectLockFields{legalHold: "ON", legalHoldStamp: objectLockTestStamp1000}
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+			t.Fatalf("%s: an older legal-hold OFF cleared the newer ON: got %+v, want %+v", instanceType, got, want)
+		}
+	})
+
+	t.Run("newer-retention-applies-and-persists-its-timestamp", func(t *testing.T) {
+		object := "ssec-lock-ordering/retention-applies"
+		versionID := seed(t, object)
+
+		retransmit(t, object, versionID, map[string]string{
+			xhttp.AmzObjectLockMode:                   "GOVERNANCE",
+			xhttp.AmzObjectLockRetainUntilDate:        retransmitRetainUntilNewer,
+			xhttp.MinIOSourceObjectRetentionTimestamp: objectLockTestStamp1000,
+		})
+		// The value applies and, crucially, the ordering timestamp is persisted so
+		// a later stale update can be recognized as older.
+		want := objectLockFields{
+			mode: "GOVERNANCE", retainUntil: retransmitRetainUntilNewer, retentionStamp: objectLockTestStamp1000,
+		}
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+			t.Fatalf("%s: newer retention did not apply and persist its timestamp: got %+v, want %+v", instanceType, got, want)
+		}
+	})
+
+	t.Run("stale-retention-update-is-ignored", func(t *testing.T) {
+		object := "ssec-lock-ordering/retention-stale"
+		versionID := seed(t, object)
+
+		// Establish the newer retention first; its timestamp persistence is proven
+		// by the sibling test above, so here only require the value took effect, so
+		// the stale overwrite below is what tells a fixed handler from a broken one.
+		retransmit(t, object, versionID, map[string]string{
+			xhttp.AmzObjectLockMode:                   "GOVERNANCE",
+			xhttp.AmzObjectLockRetainUntilDate:        retransmitRetainUntilNewer,
+			xhttp.MinIOSourceObjectRetentionTimestamp: objectLockTestStamp1000,
+		})
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got.mode != "GOVERNANCE" || got.retainUntil != retransmitRetainUntilNewer {
+			t.Fatalf("%s: seeding the newer retention failed: got %+v", instanceType, got)
+		}
+
+		// A retransmit carrying an older retention with a different date must be
+		// ignored; the newer date and its ordering timestamp survive.
+		retransmit(t, object, versionID, map[string]string{
+			xhttp.AmzObjectLockMode:                   "GOVERNANCE",
+			xhttp.AmzObjectLockRetainUntilDate:        retransmitRetainUntilStale,
+			xhttp.MinIOSourceObjectRetentionTimestamp: objectLockTestStamp0900,
+		})
+		want := objectLockFields{
+			mode: "GOVERNANCE", retainUntil: retransmitRetainUntilNewer, retentionStamp: objectLockTestStamp1000,
+		}
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+			t.Fatalf("%s: a stale retention update overwrote the newer one: got %+v, want %+v", instanceType, got, want)
+		}
+	})
+}
+
+// TestAPISSECReplicaRetransmitMultipartObjectLockOrdering proves the ordering
+// fix also covers the multipart initiation path #120 routes an SSE-C replica
+// through: NewMultipartUploadHandler reads the addressed version's stored lock
+// state and orders the incoming update against it, so a large-object retransmit
+// carrying an older legal-hold OFF cannot clear a newer ON. See pgsty/silo#120.
+func TestAPISSECReplicaRetransmitMultipartObjectLockOrdering(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testAPISSECReplicaRetransmitMultipartObjectLockOrdering,
+		makeBucketOptions: MakeBucketOptions{LockEnabled: true},
+	})
+}
+
+func testAPISSECReplicaRetransmitMultipartObjectLockOrdering(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	previousTLS := globalIsTLS
+	globalIsTLS = true
+	defer func() { globalIsTLS = previousTLS }()
+
+	key := bytes.Repeat([]byte{0x46}, 32)
+	keyMD5 := md5.Sum(key)
+	sseHeaders := map[string]string{
+		xhttp.AmzServerSideEncryptionCustomerAlgorithm: xhttp.AmzEncryptionAES,
+		xhttp.AmzServerSideEncryptionCustomerKey:       base64.StdEncoding.EncodeToString(key),
+		xhttp.AmzServerSideEncryptionCustomerKeyMD5:    base64.StdEncoding.EncodeToString(keyMD5[:]),
+	}
+
+	// replicaSealHeaders returns the sender's replica seal and marker headers for
+	// the addressed version, with every Object Lock header stripped so the case
+	// owns the lock instruction.
+	replicaSealHeaders := func(t *testing.T, srcInfo ObjectInfo) map[string]string {
+		t.Helper()
+		opts, _, err := putReplicationOpts(t.Context(), "", srcInfo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.Internal.SourceMTime = time.Time{}
+		hdrs := make(map[string]string)
+		for name, values := range opts.Header() {
+			if len(values) > 0 {
+				hdrs[name] = values[0]
+			}
+		}
+		hdrs[xhttp.MinIOSourceReplicationRequest] = "true"
+		hdrs[xhttp.AmzBucketReplicationStatus] = "REPLICA"
+		hdrs[xhttp.MinIOSourceETag] = srcInfo.ETag
+		for _, name := range []string{
+			xhttp.AmzObjectLockMode, xhttp.AmzObjectLockRetainUntilDate, xhttp.AmzObjectLockLegalHold,
+			xhttp.MinIOSourceObjectRetentionTimestamp, xhttp.MinIOSourceObjectLegalHoldTimestamp,
+		} {
+			delete(hdrs, name)
+		}
+		return hdrs
+	}
+
+	object := "ssec-lock-ordering/multipart"
+	// A single-part SSE-C source is enough; the retransmit re-uploads its bytes
+	// as one multipart part and commits the addressed version.
+	putCopyChecksumSource(t, apiRouter, credentials, bucketName, object,
+		bytes.Repeat([]byte("ssec-multipart-lock-ordering-"), 64), sseHeaders)
+	base, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionID := base.VersionID
+
+	// Establish the newer legal hold ON through the single-part PUT retransmit.
+	{
+		gr, err := obj.GetObjectNInfo(t.Context(), bucketName, object, nil, http.Header{}, ObjectOptions{
+			ReplicationRequest: true, VersionID: versionID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srcInfo := gr.ObjInfo
+		cipher, rerr := io.ReadAll(gr)
+		gr.Close()
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		hdrs := replicaSealHeaders(t, srcInfo)
+		hdrs[xhttp.AmzObjectLockLegalHold] = "ON"
+		hdrs[xhttp.MinIOSourceObjectLegalHoldTimestamp] = objectLockTestStamp1000
+		req, rerr := newTestSignedRequestV4(http.MethodPut,
+			getPutObjectURL("", bucketName, object)+"?versionId="+versionID, int64(len(cipher)),
+			bytes.NewReader(cipher), credentials.AccessKey, credentials.SecretKey, hdrs)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: seeding legal hold ON via PUT status %d: %s", instanceType, rec.Code, rec.Body.String())
+		}
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got.legalHold != "ON" {
+			t.Fatalf("%s: seeding legal hold ON failed: got %+v", instanceType, got)
+		}
+	}
+
+	// A multipart retransmit carrying an older legal-hold OFF must not clear it.
+	gr, err := obj.GetObjectNInfo(t.Context(), bucketName, object, nil, http.Header{}, ObjectOptions{
+		ReplicationRequest: true, VersionID: versionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcInfo := gr.ObjInfo
+	cipher, err := io.ReadAll(gr)
+	gr.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualSize, err := srcInfo.GetActualSize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newHdrs := replicaSealHeaders(t, srcInfo)
+	newHdrs[xhttp.AmzObjectLockLegalHold] = "OFF"
+	newHdrs[xhttp.MinIOSourceObjectLegalHoldTimestamp] = objectLockTestStamp0900
+	newReq, err := newTestSignedRequestV4(http.MethodPost,
+		getNewMultipartURL("", bucketName, object)+"&versionId="+versionID, 0, nil,
+		credentials.AccessKey, credentials.SecretKey, newHdrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(newRec, newReq)
+	if newRec.Code != http.StatusOK {
+		t.Fatalf("%s: replica NewMultipartUpload status %d: %s", instanceType, newRec.Code, newRec.Body.String())
+	}
+	var init InitiateMultipartUploadResponse
+	if err = xmlDecoder(newRec.Body, &init, int64(newRec.Body.Len())); err != nil {
+		t.Fatal(err)
+	}
+
+	partReq, err := newTestSignedRequestV4(http.MethodPut,
+		getPutObjectPartURL("", bucketName, object, init.UploadID, "1"), int64(len(cipher)),
+		bytes.NewReader(cipher), credentials.AccessKey, credentials.SecretKey,
+		map[string]string{xhttp.MinIOSourceReplicationRequest: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(partRec, partReq)
+	if partRec.Code != http.StatusOK {
+		t.Fatalf("%s: replica PutObjectPart status %d: %s", instanceType, partRec.Code, partRec.Body.String())
+	}
+
+	completeBody, err := xml.Marshal(CompleteMultipartUpload{Parts: []CompletePart{
+		{PartNumber: 1, ETag: canonicalizeETag(partRec.Header()[xhttp.ETag][0])},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeReq, err := newTestSignedRequestV4(http.MethodPost,
+		getCompleteMultipartUploadURL("", bucketName, object, init.UploadID), int64(len(completeBody)),
+		bytes.NewReader(completeBody), credentials.AccessKey, credentials.SecretKey, map[string]string{
+			xhttp.MinIOSourceReplicationRequest:    "true",
+			xhttp.MinIOSourceMTime:                 srcInfo.ModTime.Format(time.RFC3339Nano),
+			xhttp.MinIOSourceETag:                  srcInfo.ETag,
+			xhttp.MinIOReplicationActualObjectSize: strconv.FormatInt(actualSize, 10),
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(completeRec, completeReq)
+	if completeRec.Code != http.StatusOK {
+		t.Fatalf("%s: replica CompleteMultipartUpload status %d: %s", instanceType, completeRec.Code, completeRec.Body.String())
+	}
+
+	want := objectLockFields{legalHold: "ON", legalHoldStamp: objectLockTestStamp1000}
+	if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+		t.Fatalf("%s: an older legal-hold OFF via multipart cleared the newer ON: got %+v, want %+v", instanceType, got, want)
+	}
+}
+
+// TestReplicaStoredLock verifies how a replica write reads the destination
+// version's stored lock state before ordering its update: a present version
+// yields its state, a missing object or version yields an empty state so a first
+// write is not blocked, and any other read error (a quorum loss, a timeout) is
+// returned so the caller fails the write instead of ordering an incoming update
+// against lock state it merely could not read. See pgsty/silo#120.
+func TestReplicaStoredLock(t *testing.T) {
+	fixed := func(oi ObjectInfo, err error) GetObjectInfoFn {
+		return func(context.Context, string, string, ObjectOptions) (ObjectInfo, error) { return oi, err }
+	}
+	stored := ObjectInfo{UserDefined: map[string]string{
+		strings.ToLower(xhttp.AmzObjectLockLegalHold):              "ON",
+		ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp1000,
+	}}
+
+	t.Run("present-version-returns-its-state", func(t *testing.T) {
+		got, err := replicaStoredLock(context.Background(), fixed(stored, nil), "b", "o", "v")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.legalHold != "ON" || got.legalHoldTimestamp != objectLockTestStamp1000 {
+			t.Fatalf("stored lock state = %+v, want legal hold ON stamped %q", got, objectLockTestStamp1000)
+		}
+	})
+
+	for name, notFound := range map[string]error{
+		"object-not-found":  ObjectNotFound{Bucket: "b", Object: "o"},
+		"version-not-found": VersionNotFound{Bucket: "b", Object: "o", VersionID: "v"},
+	} {
+		t.Run(name+"-is-empty-state", func(t *testing.T) {
+			got, err := replicaStoredLock(context.Background(), fixed(ObjectInfo{}, notFound), "b", "o", "v")
+			if err != nil {
+				t.Fatalf("a not-found read must not error: %v", err)
+			}
+			if got != (objectLockState{}) {
+				t.Fatalf("a not-found read must yield empty state, got %+v", got)
+			}
+		})
+	}
+
+	t.Run("transient-read-error-propagates", func(t *testing.T) {
+		boom := InsufficientReadQuorum{}
+		got, err := replicaStoredLock(context.Background(), fixed(ObjectInfo{}, boom), "b", "o", "v")
+		if err == nil {
+			t.Fatal("a transient read error must propagate, not be treated as absent lock state")
+		}
+		if isErrObjectNotFound(err) || isErrVersionNotFound(err) {
+			t.Fatalf("transient error misclassified as not-found: %v", err)
+		}
+		if got != (objectLockState{}) {
+			t.Fatalf("on a read error the caller must get empty state and fail the write, got %+v", got)
+		}
+	})
+}
+
+// TestPutReplicationOptsRetentionRemovalTimestampOnly asserts that a version
+// whose retention was removed on the retransmit PUT path -- stored as an
+// ordering timestamp with the value keys absent, not empty -- still builds
+// replication options that carry the removal timestamp, so the next hop can
+// order the removal instead of keeping obsolete retention. See pgsty/silo#120.
+func TestPutReplicationOptsRetentionRemovalTimestampOnly(t *testing.T) {
+	removedAt := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	oi := ObjectInfo{
+		Bucket: "b", Name: "o", VersionID: "v1", ModTime: removedAt.Add(-time.Hour),
+		UserDefined: map[string]string{
+			// Only the reserved ordering timestamp; no mode/date keys at all.
+			ReservedMetadataPrefixLower + ObjectLockRetentionTimestamp: removedAt.Format(time.RFC3339Nano),
+		},
+	}
+	opts, _, err := putReplicationOpts(t.Context(), "", oi)
+	if err != nil {
+		t.Fatalf("putReplicationOpts on a timestamp-only removal: %v", err)
+	}
+	if opts.Mode != "" || !opts.RetainUntilDate.IsZero() {
+		t.Errorf("removal sent as a retention: mode %q date %v", opts.Mode, opts.RetainUntilDate)
+	}
+	if !opts.Internal.RetentionTimestamp.Equal(removedAt) {
+		t.Errorf("removal timestamp %v, want %v", opts.Internal.RetentionTimestamp, removedAt)
+	}
+	if hdr := opts.Header(); hdr.Get(xhttp.AmzObjectLockMode) != "" || hdr.Get(xhttp.AmzObjectLockRetainUntilDate) != "" ||
+		hdr.Get(xhttp.MinIOSourceObjectRetentionTimestamp) == "" {
+		t.Errorf("removal headers %v: want no lock value and a retention timestamp", hdr)
+	}
+}
+
+// TestAPIReplicaMarkerOnlyAppliesObjectLock guards the regression the shared
+// ordering helper could introduce: a trusted peer write that carries the
+// internal replication marker but NOT REPLICA status (replicationRequest true,
+// replicaTrusted false) must keep ordinary write semantics and apply its
+// validated Object Lock, not restore an empty stored state. It covers an
+// explicit legal hold and a bucket-default retention, on both the PUT and the
+// multipart-initiation paths. See pgsty/silo#120 (Codex finding 3).
+func TestAPIReplicaMarkerOnlyAppliesObjectLock(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testAPIReplicaMarkerOnlyAppliesObjectLock,
+		makeBucketOptions: MakeBucketOptions{LockEnabled: true},
+	})
+}
+
+func testAPIReplicaMarkerOnlyAppliesObjectLock(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	// A trusted peer credential holding ReplicateObject plus the lock permissions
+	// checkPutObjectLockAllowed enforces even for a marker-only write.
+	peer := newObjectAttributesAuthzUser(t, instanceType, bucketName,
+		`"s3:GetObject","s3:PutObject","s3:ReplicateObject","s3:PutObjectRetention","s3:PutObjectLegalHold"`)
+
+	// Bucket default retention, so a marker-only write with no lock headers still
+	// has a validated retention to apply.
+	lockCfg := []byte(`<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>30</Days></DefaultRetention></Rule></ObjectLockConfiguration>`)
+	if _, err := globalBucketMetadataSys.Update(t.Context(), bucketName, objectLockConfig, lockCfg); err != nil {
+		t.Fatalf("%s: configure bucket default retention: %v", instanceType, err)
+	}
+
+	// markerOnly returns the trusted-but-not-REPLICA header set plus extra: the
+	// internal marker with no REPLICA status.
+	markerOnly := func(extra map[string]string) map[string]string {
+		h := map[string]string{xhttp.MinIOSourceReplicationRequest: "true"}
+		maps.Copy(h, extra)
+		return h
+	}
+	data := bytes.Repeat([]byte("marker-only-lock-"), 32)
+
+	markerOnlyMPU := func(t *testing.T, object string, lockHeaders map[string]string) {
+		t.Helper()
+		newReq, err := newTestSignedRequestV4(http.MethodPost, getNewMultipartURL("", bucketName, object), 0, nil,
+			peer.AccessKey, peer.SecretKey, markerOnly(lockHeaders))
+		if err != nil {
+			t.Fatal(err)
+		}
+		newRec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(newRec, newReq)
+		if newRec.Code != http.StatusOK {
+			t.Fatalf("%s: marker-only NewMultipartUpload %d: %s", instanceType, newRec.Code, newRec.Body.String())
+		}
+		var init InitiateMultipartUploadResponse
+		if err = xmlDecoder(newRec.Body, &init, int64(newRec.Body.Len())); err != nil {
+			t.Fatal(err)
+		}
+		partReq, err := newTestSignedRequestV4(http.MethodPut,
+			getPutObjectPartURL("", bucketName, object, init.UploadID, "1"), int64(len(data)),
+			bytes.NewReader(data), peer.AccessKey, peer.SecretKey, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		partRec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(partRec, partReq)
+		if partRec.Code != http.StatusOK {
+			t.Fatalf("%s: marker-only PutObjectPart %d: %s", instanceType, partRec.Code, partRec.Body.String())
+		}
+		body, err := xml.Marshal(CompleteMultipartUpload{Parts: []CompletePart{
+			{PartNumber: 1, ETag: canonicalizeETag(partRec.Header()[xhttp.ETag][0])},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		completeReq, err := newTestSignedRequestV4(http.MethodPost,
+			getCompleteMultipartUploadURL("", bucketName, object, init.UploadID), int64(len(body)),
+			bytes.NewReader(body), peer.AccessKey, peer.SecretKey, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completeRec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(completeRec, completeReq)
+		if completeRec.Code != http.StatusOK {
+			t.Fatalf("%s: marker-only CompleteMultipartUpload %d: %s", instanceType, completeRec.Code, completeRec.Body.String())
+		}
+	}
+	markerOnlyPUT := func(t *testing.T, object string, lockHeaders map[string]string) {
+		t.Helper()
+		req, err := newTestSignedRequestV4(http.MethodPut, getPutObjectURL("", bucketName, object), int64(len(data)),
+			bytes.NewReader(data), peer.AccessKey, peer.SecretKey, markerOnly(lockHeaders))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: marker-only PUT %d: %s", instanceType, rec.Code, rec.Body.String())
+		}
+	}
+	lockOf := func(t *testing.T, object string) objectLockState {
+		t.Helper()
+		info, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return storedObjectLockState(info.UserDefined)
+	}
+
+	// An explicit legal hold on a marker-only write must be applied, not dropped.
+	// A legal-hold request suppresses the bucket default retention, so the version
+	// carries only the hold.
+	explicitHold := map[string]string{xhttp.AmzObjectLockLegalHold: "ON"}
+
+	t.Run("put-explicit-legal-hold", func(t *testing.T) {
+		object := "marker-only/put-legal-hold"
+		markerOnlyPUT(t, object, explicitHold)
+		if got := lockOf(t, object); got.legalHold != "ON" {
+			t.Fatalf("%s: marker-only PUT dropped the explicit legal hold: got %+v", instanceType, got)
+		}
+	})
+	t.Run("mpu-explicit-legal-hold", func(t *testing.T) {
+		object := "marker-only/mpu-legal-hold"
+		markerOnlyMPU(t, object, explicitHold)
+		if got := lockOf(t, object); got.legalHold != "ON" {
+			t.Fatalf("%s: marker-only multipart dropped the explicit legal hold: got %+v", instanceType, got)
+		}
+	})
+	t.Run("put-bucket-default-retention", func(t *testing.T) {
+		object := "marker-only/put-default-retention"
+		markerOnlyPUT(t, object, nil)
+		if got := lockOf(t, object); got.mode != "GOVERNANCE" || got.retainUntil == "" {
+			t.Fatalf("%s: marker-only PUT dropped the bucket default retention: got %+v", instanceType, got)
+		}
+	})
+	t.Run("mpu-bucket-default-retention", func(t *testing.T) {
+		object := "marker-only/mpu-default-retention"
+		markerOnlyMPU(t, object, nil)
+		if got := lockOf(t, object); got.mode != "GOVERNANCE" || got.retainUntil == "" {
+			t.Fatalf("%s: marker-only multipart dropped the bucket default retention: got %+v", instanceType, got)
+		}
+	})
+}
+
+// TestAPIReplicaMultipartNewerHoldSurvivesCompletion verifies that a legal hold
+// that reaches a destination version AFTER a replica multipart upload was
+// initiated is not rolled back when that upload completes. The initiation
+// resolves the lock against the version as it then stands, but completion
+// re-orders the carried lock against the version read under the namespace write
+// lock that guards the replacement, so a newer hold (with its newer timestamp)
+// survives. See pgsty/silo#120 (Codex finding 1).
+func TestAPIReplicaMultipartNewerHoldSurvivesCompletion(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testAPIReplicaMultipartNewerHoldSurvivesCompletion,
+		makeBucketOptions: MakeBucketOptions{LockEnabled: true},
+	})
+}
+
+func testAPIReplicaMultipartNewerHoldSurvivesCompletion(obj ObjectLayer, instanceType, bucketName string,
+	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
+) {
+	previousTLS := globalIsTLS
+	globalIsTLS = true
+	defer func() { globalIsTLS = previousTLS }()
+
+	key := bytes.Repeat([]byte{0x47}, 32)
+	keyMD5 := md5.Sum(key)
+	sseHeaders := map[string]string{
+		xhttp.AmzServerSideEncryptionCustomerAlgorithm: xhttp.AmzEncryptionAES,
+		xhttp.AmzServerSideEncryptionCustomerKey:       base64.StdEncoding.EncodeToString(key),
+		xhttp.AmzServerSideEncryptionCustomerKeyMD5:    base64.StdEncoding.EncodeToString(keyMD5[:]),
+	}
+	object := "mpu-lock-boundary/obj"
+
+	// seal returns the sender's SSE-C replica seal and marker headers for the
+	// addressed version, with every Object Lock header stripped so the case owns
+	// the lock instruction.
+	seal := func(t *testing.T, srcInfo ObjectInfo) map[string]string {
+		t.Helper()
+		opts, _, err := putReplicationOpts(t.Context(), "", srcInfo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.Internal.SourceMTime = time.Time{}
+		hdrs := make(map[string]string)
+		for name, values := range opts.Header() {
+			if len(values) > 0 {
+				hdrs[name] = values[0]
+			}
+		}
+		hdrs[xhttp.MinIOSourceReplicationRequest] = "true"
+		hdrs[xhttp.AmzBucketReplicationStatus] = "REPLICA"
+		hdrs[xhttp.MinIOSourceETag] = srcInfo.ETag
+		for _, name := range []string{
+			xhttp.AmzObjectLockMode, xhttp.AmzObjectLockRetainUntilDate, xhttp.AmzObjectLockLegalHold,
+			xhttp.MinIOSourceObjectRetentionTimestamp, xhttp.MinIOSourceObjectLegalHoldTimestamp,
+		} {
+			delete(hdrs, name)
+		}
+		return hdrs
+	}
+	rawOf := func(t *testing.T, versionID string) (ObjectInfo, []byte) {
+		t.Helper()
+		gr, err := obj.GetObjectNInfo(t.Context(), bucketName, object, nil, http.Header{}, ObjectOptions{
+			ReplicationRequest: true, VersionID: versionID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srcInfo := gr.ObjInfo
+		cipher, rerr := io.ReadAll(gr)
+		gr.Close()
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		return srcInfo, cipher
+	}
+
+	// A destination SSE-C version with no lock.
+	putCopyChecksumSource(t, apiRouter, credentials, bucketName, object,
+		bytes.Repeat([]byte("mpu-lock-boundary-"), 64), sseHeaders)
+	base, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionID := base.VersionID
+	srcInfo, cipher := rawOf(t, versionID)
+
+	// Initiate an SSE-C replica multipart carrying legal hold OFF stamped 09:00.
+	// The destination has no lock yet, so the decision made now is OFF@09:00.
+	newHdrs := seal(t, srcInfo)
+	newHdrs[xhttp.AmzObjectLockLegalHold] = "OFF"
+	newHdrs[xhttp.MinIOSourceObjectLegalHoldTimestamp] = objectLockTestStamp0900
+	newReq, err := newTestSignedRequestV4(http.MethodPost,
+		getNewMultipartURL("", bucketName, object)+"&versionId="+versionID, 0, nil,
+		credentials.AccessKey, credentials.SecretKey, newHdrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(newRec, newReq)
+	if newRec.Code != http.StatusOK {
+		t.Fatalf("%s: replica NewMultipartUpload %d: %s", instanceType, newRec.Code, newRec.Body.String())
+	}
+	var init InitiateMultipartUploadResponse
+	if err = xmlDecoder(newRec.Body, &init, int64(newRec.Body.Len())); err != nil {
+		t.Fatal(err)
+	}
+
+	// After initiation, a newer legal hold ON@10:00 lands on the same version
+	// through an independent SSE-C replica PUT retransmit.
+	putHdrs := seal(t, srcInfo)
+	putHdrs[xhttp.AmzObjectLockLegalHold] = "ON"
+	putHdrs[xhttp.MinIOSourceObjectLegalHoldTimestamp] = objectLockTestStamp1000
+	putReq, err := newTestSignedRequestV4(http.MethodPut,
+		getPutObjectURL("", bucketName, object)+"?versionId="+versionID, int64(len(cipher)),
+		bytes.NewReader(cipher), credentials.AccessKey, credentials.SecretKey, putHdrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("%s: interleaving replica PUT %d: %s", instanceType, putRec.Code, putRec.Body.String())
+	}
+	if got := readObjectLockFields(t, obj, bucketName, object, versionID); got.legalHold != "ON" {
+		t.Fatalf("%s: the interleaving PUT did not set the newer ON: got %+v", instanceType, got)
+	}
+
+	// Finish the multipart upload the sender's way and prove the newer ON survives.
+	partReq, err := newTestSignedRequestV4(http.MethodPut,
+		getPutObjectPartURL("", bucketName, object, init.UploadID, "1"), int64(len(cipher)),
+		bytes.NewReader(cipher), credentials.AccessKey, credentials.SecretKey,
+		map[string]string{xhttp.MinIOSourceReplicationRequest: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(partRec, partReq)
+	if partRec.Code != http.StatusOK {
+		t.Fatalf("%s: replica PutObjectPart %d: %s", instanceType, partRec.Code, partRec.Body.String())
+	}
+	actualSize, err := srcInfo.GetActualSize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := xml.Marshal(CompleteMultipartUpload{Parts: []CompletePart{
+		{PartNumber: 1, ETag: canonicalizeETag(partRec.Header()[xhttp.ETag][0])},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeReq, err := newTestSignedRequestV4(http.MethodPost,
+		getCompleteMultipartUploadURL("", bucketName, object, init.UploadID), int64(len(body)),
+		bytes.NewReader(body), credentials.AccessKey, credentials.SecretKey, map[string]string{
+			xhttp.MinIOSourceReplicationRequest:    "true",
+			xhttp.MinIOSourceMTime:                 srcInfo.ModTime.Format(time.RFC3339Nano),
+			xhttp.MinIOSourceETag:                  srcInfo.ETag,
+			xhttp.MinIOReplicationActualObjectSize: strconv.FormatInt(actualSize, 10),
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeRec := httptest.NewRecorder()
+	apiRouter.ServeHTTP(completeRec, completeReq)
+	if completeRec.Code != http.StatusOK {
+		t.Fatalf("%s: replica CompleteMultipartUpload %d: %s", instanceType, completeRec.Code, completeRec.Body.String())
+	}
+
+	// The completion re-ordered the carried OFF@09:00 against the ON@10:00 that
+	// reached the version after initiation: the newer hold and its timestamp win.
+	want := objectLockFields{legalHold: "ON", legalHoldStamp: objectLockTestStamp1000}
+	if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+		t.Fatalf("%s: a newer legal hold that arrived after initiation was rolled back at completion: got %+v, want %+v",
+			instanceType, got, want)
+	}
+}
+
+// TestReplicaPutObjectLockReconcileUnderWriteLock exercises the PUT counterpart
+// of the multipart reconcile: a replica full write reaches the object layer
+// carrying the Object Lock its handler resolved, but the addressed version has
+// since taken a newer lock update. PutObject must re-order the incoming lock
+// against the version read under the write lock, so the newer stored value is
+// kept. Driving the object layer directly stands in for the handler-read /
+// backend-commit interleave without a timing race. See pgsty/silo#120.
+func TestReplicaPutObjectLockReconcileUnderWriteLock(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testReplicaPutObjectLockReconcileUnderWriteLock,
+		makeBucketOptions: MakeBucketOptions{LockEnabled: true},
+	})
+}
+
+func testReplicaPutObjectLockReconcileUnderWriteLock(obj ObjectLayer, instanceType, bucketName string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	ctx := t.Context()
+
+	seedVersion := func(t *testing.T, object string, meta map[string]string) string {
+		t.Helper()
+		info, err := obj.PutObject(ctx, bucketName, object,
+			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""),
+			ObjectOptions{Versioned: true, UserDefined: meta})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.VersionID
+	}
+	// replicaWrite overwrites the addressed version the way a replica retransmit
+	// reaches the object layer, with the in-lock reconcile enabled.
+	replicaWrite := func(t *testing.T, object, versionID string, meta map[string]string) {
+		t.Helper()
+		_, err := obj.PutObject(ctx, bucketName, object,
+			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""),
+			ObjectOptions{Versioned: true, VersionID: versionID, ReplicaLockReconcile: true, UserDefined: meta})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("older-legal-hold-off-does-not-clear-newer-on", func(t *testing.T) {
+		object := "reconcile/put-legal-hold"
+		versionID := seedVersion(t, object, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockLegalHold):              "ON",
+			ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp1000,
+		})
+		replicaWrite(t, object, versionID, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockLegalHold):              "OFF",
+			ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp0900,
+		})
+		want := objectLockFields{legalHold: "ON", legalHoldStamp: objectLockTestStamp1000}
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+			t.Fatalf("%s: in-lock reconcile let an older OFF overwrite the newer stored ON: got %+v, want %+v",
+				instanceType, got, want)
+		}
+	})
+
+	t.Run("stale-retention-does-not-overwrite-newer", func(t *testing.T) {
+		object := "reconcile/put-retention"
+		versionID := seedVersion(t, object, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockMode):                   "GOVERNANCE",
+			strings.ToLower(xhttp.AmzObjectLockRetainUntilDate):        retransmitRetainUntilNewer,
+			ReservedMetadataPrefixLower + ObjectLockRetentionTimestamp: objectLockTestStamp1000,
+		})
+		replicaWrite(t, object, versionID, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockMode):                   "GOVERNANCE",
+			strings.ToLower(xhttp.AmzObjectLockRetainUntilDate):        retransmitRetainUntilStale,
+			ReservedMetadataPrefixLower + ObjectLockRetentionTimestamp: objectLockTestStamp0900,
+		})
+		want := objectLockFields{
+			mode: "GOVERNANCE", retainUntil: retransmitRetainUntilNewer, retentionStamp: objectLockTestStamp1000,
+		}
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+			t.Fatalf("%s: in-lock reconcile let a stale retention overwrite the newer stored one: got %+v, want %+v",
+				instanceType, got, want)
+		}
+	})
+
+	t.Run("newer-incoming-hold-applies", func(t *testing.T) {
+		object := "reconcile/put-newer-applies"
+		versionID := seedVersion(t, object, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockLegalHold):              "OFF",
+			ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp0900,
+		})
+		replicaWrite(t, object, versionID, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockLegalHold):              "ON",
+			ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp1000,
+		})
+		want := objectLockFields{legalHold: "ON", legalHoldStamp: objectLockTestStamp1000}
+		if got := readObjectLockFields(t, obj, bucketName, object, versionID); got != want {
+			t.Fatalf("%s: in-lock reconcile did not apply the newer incoming hold: got %+v, want %+v",
+				instanceType, got, want)
+		}
+	})
+
+	t.Run("pre-upgrade-shape-on-absent-version-is-preserved", func(t *testing.T) {
+		// A pre-upgrade upload persisted validated lock values WITHOUT their
+		// ordering timestamps. Completing it while the destination version is
+		// absent must keep those values: there is nothing to order against, so the
+		// reconcile is skipped rather than deleting the accepted lock. The same
+		// not-found handling guards CompleteMultipartUpload.
+		object := "reconcile/put-absent-version"
+		absentVersion := mustGetUUID()
+		_, err := obj.PutObject(ctx, bucketName, object,
+			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""),
+			ObjectOptions{Versioned: true, VersionID: absentVersion, ReplicaLockReconcile: true, UserDefined: map[string]string{
+				strings.ToLower(xhttp.AmzObjectLockMode):            "GOVERNANCE",
+				strings.ToLower(xhttp.AmzObjectLockRetainUntilDate): retransmitRetainUntilNewer,
+				strings.ToLower(xhttp.AmzObjectLockLegalHold):       "ON",
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := objectLockFields{mode: "GOVERNANCE", retainUntil: retransmitRetainUntilNewer, legalHold: "ON"}
+		if got := readObjectLockFields(t, obj, bucketName, object, absentVersion); got != want {
+			t.Fatalf("%s: a pre-upgrade lock (no ordering timestamps) on an absent version was stripped: got %+v, want %+v",
+				instanceType, got, want)
+		}
+	})
+}
+
+// TestReplicaLockReconcileNullVersion covers the null version, which persisted
+// upload metadata records as an empty VersionID. The completion reconcile must
+// order the incoming lock against the null version's own stored state -- looked
+// up as the null version, not the latest -- so a retransmit addressing the null
+// version cannot be reconciled against an unrelated UUID version, and a null
+// version absent while a UUID version exists is not mistaken for present. Single
+// erasure set. See pgsty/silo#120.
+func TestReplicaLockReconcileNullVersion(t *testing.T) {
+	defer DetectTestLeak(t)()
+	ExecObjectLayerAPITest(ExecObjectLayerAPITestArgs{
+		t:                 t,
+		objAPITest:        testReplicaLockReconcileNullVersion,
+		makeBucketOptions: MakeBucketOptions{VersioningEnabled: true},
+	})
+}
+
+func testReplicaLockReconcileNullVersion(obj ObjectLayer, instanceType, bucketName string,
+	_ http.Handler, _ auth.Credentials, t *testing.T,
+) {
+	ctx := t.Context()
+
+	// completeNullMPU runs an SSE-C replica multipart upload addressing the null
+	// version (VersionSuspended) carrying uploadLock, through the reconcile.
+	completeNullMPU := func(t *testing.T, object string, uploadLock map[string]string) {
+		t.Helper()
+		meta := map[string]string{crypto.MetaSealedKeySSEC: "dummy-sealed-key"}
+		maps.Copy(meta, uploadLock)
+		res, err := obj.NewMultipartUpload(ctx, bucketName, object, ObjectOptions{VersionSuspended: true, UserDefined: meta})
+		if err != nil {
+			t.Fatal(err)
+		}
+		part, err := obj.PutObjectPart(ctx, bucketName, object, res.UploadID, 1,
+			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""), ObjectOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := obj.CompleteMultipartUpload(ctx, bucketName, object, res.UploadID,
+			[]CompletePart{{PartNumber: 1, ETag: part.ETag}},
+			ObjectOptions{VersionSuspended: true, ReplicaLockReconcile: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("null-and-uuid-present-reconciles-the-null-version", func(t *testing.T) {
+		object := "reconcile/null-vs-uuid"
+		// The null version holds a newer legal hold ON@10:00.
+		if _, err := obj.PutObject(ctx, bucketName, object,
+			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""),
+			ObjectOptions{VersionSuspended: true, MTime: time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC), UserDefined: map[string]string{
+				strings.ToLower(xhttp.AmzObjectLockLegalHold):              "ON",
+				ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp1000,
+			}}); err != nil {
+			t.Fatal(err)
+		}
+		// A later UUID version holds an unrelated OFF@11:00 and is the latest.
+		uuidInfo, err := obj.PutObject(ctx, bucketName, object,
+			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""),
+			ObjectOptions{Versioned: true, MTime: time.Date(2026, 9, 3, 11, 0, 0, 0, time.UTC), UserDefined: map[string]string{
+				strings.ToLower(xhttp.AmzObjectLockLegalHold):              "OFF",
+				ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp1100,
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// A null-version SSE-C retransmit carrying an older OFF@09:00.
+		completeNullMPU(t, object, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockLegalHold):              "OFF",
+			ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp0900,
+		})
+
+		// The null version keeps its own newer ON@10:00; the UUID is untouched.
+		wantNull := objectLockFields{legalHold: "ON", legalHoldStamp: objectLockTestStamp1000}
+		if got := readObjectLockFields(t, obj, bucketName, object, nullVersionID); got != wantNull {
+			t.Fatalf("%s: null-version completion reconciled against the wrong version: got %+v, want %+v", instanceType, got, wantNull)
+		}
+		wantUUID := objectLockFields{legalHold: "OFF", legalHoldStamp: objectLockTestStamp1100}
+		if got := readObjectLockFields(t, obj, bucketName, object, uuidInfo.VersionID); got != wantUUID {
+			t.Fatalf("%s: the UUID version was changed by a null-version completion: got %+v, want %+v", instanceType, got, wantUUID)
+		}
+	})
+
+	t.Run("absent-null-with-uuid-keeps-accepted-lock", func(t *testing.T) {
+		object := "reconcile/null-absent"
+		// Only a UUID version exists; there is no null version.
+		if _, err := obj.PutObject(ctx, bucketName, object,
+			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""),
+			ObjectOptions{Versioned: true, MTime: time.Date(2026, 9, 3, 11, 0, 0, 0, time.UTC), UserDefined: map[string]string{
+				strings.ToLower(xhttp.AmzObjectLockLegalHold):              "OFF",
+				ReservedMetadataPrefixLower + ObjectLockLegalHoldTimestamp: objectLockTestStamp1100,
+			}}); err != nil {
+			t.Fatal(err)
+		}
+
+		// A null-version retransmit with its own validated legal hold ON. The null
+		// version does not exist, so the write must keep its accepted lock rather
+		// than order against the unrelated UUID version.
+		completeNullMPU(t, object, map[string]string{
+			strings.ToLower(xhttp.AmzObjectLockLegalHold): "ON",
+		})
+		if got := readObjectLockFields(t, obj, bucketName, object, nullVersionID); got.legalHold != "ON" {
+			t.Fatalf("%s: an absent null version was reconciled against the UUID version: got %+v", instanceType, got)
 		}
 	})
 }

@@ -877,8 +877,8 @@ func putReplicationOpts(ctx context.Context, sc string, objInfo ObjectInfo) (put
 	if hasMode {
 		putOpts.Mode = minio.RetentionMode(mode)
 	}
-	// A removed retention is stored as an empty mode and date; it is sent as
-	// a value-less update that still carries its ordering timestamp.
+	// A removed retention is stored as an empty or absent mode and date; it is
+	// sent as a value-less update that still carries its ordering timestamp.
 	if hasRetainDate && retainDateStr != "" {
 		rdate, err := amztime.ISO8601Parse(retainDateStr)
 		if err != nil {
@@ -886,10 +886,14 @@ func putReplicationOpts(ctx context.Context, sc string, objInfo ObjectInfo) (put
 		}
 		putOpts.RetainUntilDate = rdate
 	}
-	if hasMode || hasRetainDate {
-		// set retention timestamp in opts
+	retainTmstampStr, hasRetainTmstamp := objInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]
+	if hasMode || hasRetainDate || hasRetainTmstamp {
+		// Send the ordering timestamp whenever the version carries one, even for a
+		// removal whose value keys are absent (the shape a retransmit PUT leaves),
+		// so the next hop can order the removal instead of keeping obsolete
+		// retention.
 		retTimestamp := objInfo.ModTime
-		if retainTmstampStr, ok := objInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]; ok {
+		if hasRetainTmstamp {
 			var err error
 			retTimestamp, err = time.Parse(time.RFC3339Nano, retainTmstampStr)
 			if err != nil {
@@ -1618,8 +1622,11 @@ applyAction:
 	} else {
 		putOpts, isMP, err := putReplicationOpts(ctx, tgt.StorageClass, objInfo)
 		if err != nil {
-			rinfo.Err = err
+			// rinfo was primed Completed above; a failure to build the write
+			// options means nothing reached the target, so mark it Failed and
+			// carry the error instead of reporting a phantom success.
 			rinfo.ReplicationStatus = replication.Failed
+			rinfo.Err = err
 			replLogIf(ctx, fmt.Errorf("failed to set replicate options for object %s/%s(%s) (target %s) err:%w", bucket, objInfo.Name, objInfo.VersionID, tgt.EndpointURL(), err))
 			sendEvent(eventArgs{
 				EventName:  event.ObjectReplicationNotTracked,
