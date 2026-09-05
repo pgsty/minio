@@ -716,6 +716,9 @@ func (api objectAPIHandlers) getObjectAttributesHandler(ctx context.Context, obj
 				}
 
 				if len(OA.ObjectParts.Parts) == opts.MaxParts {
+					// This page is full and at least one more part
+					// is still pending, so the listing is truncated.
+					OA.ObjectParts.IsTruncated = true
 					break
 				}
 
@@ -758,8 +761,11 @@ func (api objectAPIHandlers) getObjectAttributesHandler(ctx context.Context, obj
 			}
 		}
 
-		if OA.ObjectParts.NextPartNumberMarker != partsLength {
-			OA.ObjectParts.IsTruncated = true
+		// Part numbers may be sparse, so they cannot be compared against
+		// the part count. NextPartNumberMarker only carries a continuation
+		// token for a truncated listing, as in ListObjectParts.
+		if !OA.ObjectParts.IsTruncated {
+			OA.ObjectParts.NextPartNumberMarker = 0
 		}
 	}
 
