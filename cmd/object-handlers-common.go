@@ -28,6 +28,7 @@ import (
 
 	"github.com/minio/minio/internal/amztime"
 	"github.com/minio/minio/internal/bucket/lifecycle"
+	"github.com/minio/minio/internal/crypto"
 	"github.com/minio/minio/internal/event"
 	"github.com/minio/minio/internal/hash"
 	xhttp "github.com/minio/minio/internal/http"
@@ -193,7 +194,15 @@ func checkPreconditionsPUT(ctx context.Context, w http.ResponseWriter, r *http.R
 
 	etagMatch := opts.PreserveETag != "" && isETagEqual(objInfo.ETag, opts.PreserveETag)
 	vidMatch := opts.VersionID != "" && opts.VersionID == objInfo.VersionID
-	if etagMatch && vidMatch {
+	// A matching version and ETag normally mean the destination already holds
+	// this version, so the write is skipped. They do not establish that for an
+	// authenticated SSE-C replica write: the destination cannot decrypt or
+	// re-encrypt the body without the customer key, so it cannot verify the
+	// replica, and this retransmission is how such a replica is repaired or
+	// updated. The predicate is the incoming request's restored SSE-C metadata,
+	// not what the destination happens to hold.
+	ssecReplica := isReplicaTrusted(r.Context()) && crypto.SSEC.IsEncrypted(opts.UserDefined)
+	if etagMatch && vidMatch && !ssecReplica {
 		writeHeaders()
 		writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrPreconditionFailed), r.URL)
 		return true

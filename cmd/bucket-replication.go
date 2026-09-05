@@ -872,19 +872,25 @@ func putReplicationOpts(ctx context.Context, sc string, objInfo ObjectInfo) (put
 	if cc, ok := lkMap.Lookup(xhttp.CacheControl); ok {
 		putOpts.CacheControl = cc
 	}
-	if mode, ok := lkMap.Lookup(xhttp.AmzObjectLockMode); ok {
-		rmode := minio.RetentionMode(mode)
-		putOpts.Mode = rmode
+	mode, hasMode := lkMap.Lookup(xhttp.AmzObjectLockMode)
+	retainDateStr, hasRetainDate := lkMap.Lookup(xhttp.AmzObjectLockRetainUntilDate)
+	if hasMode {
+		putOpts.Mode = minio.RetentionMode(mode)
 	}
-	if retainDateStr, ok := lkMap.Lookup(xhttp.AmzObjectLockRetainUntilDate); ok {
+	// A removed retention is stored as an empty mode and date; it is sent as
+	// a value-less update that still carries its ordering timestamp.
+	if hasRetainDate && retainDateStr != "" {
 		rdate, err := amztime.ISO8601Parse(retainDateStr)
 		if err != nil {
 			return putOpts, false, err
 		}
 		putOpts.RetainUntilDate = rdate
+	}
+	if hasMode || hasRetainDate {
 		// set retention timestamp in opts
 		retTimestamp := objInfo.ModTime
 		if retainTmstampStr, ok := objInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]; ok {
+			var err error
 			retTimestamp, err = time.Parse(time.RFC3339Nano, retainTmstampStr)
 			if err != nil {
 				return putOpts, false, err
@@ -1520,11 +1526,14 @@ func (ri ReplicateObjectInfo) replicateAll(ctx context.Context, objectAPI Object
 			return rinfo
 		}
 	} else {
-		// SSEC objects will refuse HeadObject without the decryption key.
-		// Ignore the error, since we know the object exists and versioning prevents overwriting existing versions.
+		// The sender holds no customer key, so the target refuses HeadObject on
+		// an SSE-C object and the replica cannot be compared. The metadata-only
+		// CopyObject that a replicateMetadata action would run then fails on any
+		// non-empty object, because the undecryptable source checksum makes the
+		// target recompute one and rewrite the data. A full retransmit is the
+		// only action that completes.
 		if isSSEC && strings.Contains(cerr.Error(), errorCodes[ErrSSEEncryptedObject].Description) {
-			rinfo.ReplicationStatus = replication.Completed
-			rinfo.ReplicationAction = replicateNone
+			rAction = replicateAll
 			goto applyAction
 		}
 		// if target returns error other than NoSuchKey, defer replication attempt
