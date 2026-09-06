@@ -3029,6 +3029,19 @@ func resyncResultFor(rinfos replicatedInfos, arn string, roi ReplicateObjectInfo
 	return st
 }
 
+// objectNeedsResyncForARN reports whether roi must be resynced for target arn
+// specifically. The resync worker pool is scoped to a single target (opts.arn),
+// so an object that only qualifies for a different target must be skipped here:
+// admitting it would replicate it for arn's peers only, leaving arn absent from
+// the per-object result, which resyncResultFor then (correctly, but
+// misleadingly) counts as a failure for arn - an object arn was never
+// responsible for. Only opts.arn carries this resync's ResetID, and that reset
+// is already folded into its per-target decision, so the per-target check both
+// scopes dispatch and honors the reset.
+func objectNeedsResyncForARN(roi ReplicateObjectInfo, arn string) bool {
+	return roi.ExistingObjResync.mustResyncTarget(arn)
+}
+
 // resyncBucket resyncs all qualifying objects as per replication rules for the target
 // ARN
 func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI ObjectLayer, heal bool, opts resyncOpts) {
@@ -3196,7 +3209,12 @@ func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI Object
 		}
 		lastCheckpoint = ""
 		roi := getHealReplicateObjectInfo(res.Item, rcfg)
-		if !roi.ExistingObjResync.mustResync() {
+		// Scope dispatch to this resync's target: the worker pool is for
+		// opts.arn, so skip objects that only need resync for a different
+		// target (each target has its own resync). Without this, a cross-target
+		// object leaves opts.arn absent from its per-object result and is
+		// miscounted as an opts.arn failure.
+		if !objectNeedsResyncForARN(roi, opts.arn) {
 			continue
 		}
 		select {
