@@ -18,10 +18,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"path"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/minio/madmin-go/v3"
@@ -306,4 +310,221 @@ func TestReplicationValidationObjectUsesRulePrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The resync-finalization tests below exercise the real result sink, the
+// finish() shutdown ordering, and the sendResyncResult / finalResyncStatus
+// helpers, plus (for the persistence cases) markStatus with on-disk
+// round-tripping. resyncBucket cannot be driven end to end in a unit test
+// because its workers call a live remote target (StatObject), so the helpers it
+// uses are exercised directly. The blocking-order assertions run under
+// testing/synctest so a removed wait fails deterministically, with no timing
+// windows.
+
+func newTestResyncer(bucket, arn string) (*replicationResyncer, resyncOpts) {
+	s := &replicationResyncer{
+		statusMap:      map[string]BucketReplicationResyncStatus{},
+		resyncCancelCh: make(chan struct{}, resyncWorkerCnt),
+	}
+	brs := newBucketResyncStatus(bucket)
+	brs.TargetsMap[arn] = TargetReplicationResyncStatus{ResyncStatus: ResyncStarted}
+	s.statusMap[bucket] = brs
+	return s, resyncOpts{bucket: bucket, arn: arn, resyncID: "reset-" + bucket}
+}
+
+// TestResyncBucketFinalize round-trips the terminal status through a real
+// ObjectLayer: a clean run persists Completed with every result, while a run
+// whose parent context was canceled during the drain, or in which a worker
+// dropped a result on the cancel signal, is downgraded to Failed so a persisted
+// Completed never misrepresents an incomplete resync.
+func TestResyncBucketFinalize(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	objAPI, fsDirs, err := prepareErasure16(ctx)
+	if err != nil {
+		t.Fatalf("prepare erasure backend: %v", err)
+	}
+	defer removeRoots(fsDirs)
+
+	// persistTerminal applies resyncBucket's finalizer logic (finalResyncStatus
+	// then markStatus, which persists) and reads the status back the way the
+	// resync status API does.
+	persistTerminal := func(t *testing.T, s *replicationResyncer, opts resyncOpts, status ResyncStatusType, ctxErr error, aborted bool) TargetReplicationResyncStatus {
+		t.Helper()
+		s.markStatus(finalResyncStatus(status, ctxErr, aborted), opts, objAPI)
+		brs, err := loadBucketResyncMetadata(ctx, opts.bucket, objAPI)
+		if err != nil {
+			t.Fatalf("load persisted resync metadata: %v", err)
+		}
+		return brs.TargetsMap[opts.arn]
+	}
+
+	// 1. Clean completion: every result - including the failed object - is folded
+	//    into the persisted status, which stays Completed.
+	t.Run("persists complete counts", func(t *testing.T) {
+		s, opts := newTestResyncer("finalize-counts", "arn1")
+		results := s.newResyncResults(opts)
+		results.ch <- TargetReplicationResyncStatus{Object: "ok-1", ReplicatedCount: 1, ReplicatedSize: 100}
+		results.ch <- TargetReplicationResyncStatus{Object: "ok-2", ReplicatedCount: 1, ReplicatedSize: 200}
+		results.ch <- TargetReplicationResyncStatus{Object: "bad", FailedCount: 1, FailedSize: 300}
+
+		var wg sync.WaitGroup // no producer workers for this case
+		results.finish(nil, &wg)
+
+		st := persistTerminal(t, s, opts, ResyncCompleted, nil, false)
+		if st.ResyncStatus != ResyncCompleted {
+			t.Fatalf("persisted status = %s, want Completed", st.ResyncStatus)
+		}
+		if st.ReplicatedCount != 2 || st.ReplicatedSize != 300 || st.FailedCount != 1 || st.FailedSize != 300 {
+			t.Fatalf("persisted counts = {replicated:%d/%d failed:%d/%d}, want {2/300 1/300}",
+				st.ReplicatedCount, st.ReplicatedSize, st.FailedCount, st.FailedSize)
+		}
+	})
+
+	// 2. Parent context canceled during the drain -> Completed downgraded to
+	//    Failed (markStatus persists under its own context, so nothing else stops
+	//    a bare Completed from being recorded).
+	t.Run("parent cancel during drain downgrades to failed", func(t *testing.T) {
+		s, opts := newTestResyncer("finalize-parent-cancel", "arn1")
+		results := s.newResyncResults(opts)
+		results.ch <- TargetReplicationResyncStatus{Object: "ok-1", ReplicatedCount: 1, ReplicatedSize: 100}
+		var wg sync.WaitGroup
+		results.finish(nil, &wg)
+
+		cctx, ccancel := context.WithCancel(context.Background())
+		ccancel()
+		st := persistTerminal(t, s, opts, ResyncCompleted, cctx.Err(), false)
+		if st.ResyncStatus != ResyncFailed {
+			t.Fatalf("persisted status = %s, want Failed (parent canceled during drain)", st.ResyncStatus)
+		}
+	})
+
+	// 3. A worker dropped a computed result on the resync-cancel token (parent
+	//    still alive) -> sendResyncResult records the abort and Completed is
+	//    downgraded to Failed.
+	t.Run("worker abort downgrades to failed", func(t *testing.T) {
+		s, opts := newTestResyncer("finalize-worker-abort", "arn1")
+		s.resyncCancelCh <- struct{}{}                 // cancel token waiting
+		ch := make(chan TargetReplicationResyncStatus) // no reader: the send would block
+		var aborted atomic.Bool
+		if s.sendResyncResult(context.Background(), ch, TargetReplicationResyncStatus{Object: "dropped", ReplicatedCount: 1}, &aborted) {
+			t.Fatal("sendResyncResult reported success despite the cancel token")
+		}
+		if !aborted.Load() {
+			t.Fatal("worker abort was not recorded")
+		}
+		st := persistTerminal(t, s, opts, ResyncCompleted, nil, aborted.Load())
+		if st.ResyncStatus != ResyncFailed {
+			t.Fatalf("persisted status = %s, want Failed (worker dropped a result)", st.ResyncStatus)
+		}
+	})
+}
+
+// TestResyncFinishDrainsResults asserts finish() does not return until the
+// consumer has applied the final result (the #136 defect). A gated apply holds
+// the last result unapplied; under synctest finish() must stay durably blocked
+// until it is released - if rr.wg.Wait() is removed, finish() returns early and
+// the test fails deterministically.
+func TestResyncFinishDrainsResults(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, opts := newTestResyncer("drain", "arn1")
+		reachedFinal := make(chan struct{})
+		release := make(chan struct{})
+		results := startResyncResults(func(r TargetReplicationResyncStatus) {
+			if r.Object == "final" {
+				close(reachedFinal)
+				<-release
+			}
+			s.incStats(r, opts)
+		})
+		results.ch <- TargetReplicationResyncStatus{Object: "ok-1", ReplicatedCount: 1, ReplicatedSize: 100}
+		results.ch <- TargetReplicationResyncStatus{Object: "final", FailedCount: 1, FailedSize: 200}
+		<-reachedFinal // consumer received "final" but is gated before incStats(final)
+
+		var wg sync.WaitGroup
+		finishDone := make(chan struct{})
+		go func() {
+			results.finish(nil, &wg)
+			close(finishDone)
+		}()
+
+		synctest.Wait()
+		select {
+		case <-finishDone:
+			close(release)
+			synctest.Wait()
+			t.Fatal("finish() returned before the final result was drained (drain wait missing)")
+		default:
+			// finish() is durably blocked in rr.wg.Wait() - correct.
+		}
+
+		close(release)
+		synctest.Wait()
+		<-finishDone
+		st := s.statusMap[opts.bucket].TargetsMap[opts.arn]
+		if st.ReplicatedCount != 1 || st.FailedCount != 1 || st.FailedSize != 200 {
+			t.Fatalf("status after finish = {replicated:%d failed:%d/%d}, want {1 1/200}",
+				st.ReplicatedCount, st.FailedCount, st.FailedSize)
+		}
+	})
+}
+
+// TestResyncFinishWaitsForInflightWorker asserts finish() stops the producer
+// workers before it closes the result channel, so an in-flight worker (as on an
+// early-return path) never sends on a closed channel and its result is not lost.
+// A gated worker stays in flight past the shutdown request; under synctest
+// finish() must stay durably blocked until the worker is released - if
+// workerWg.Wait() is removed, finish() returns early and the test fails
+// deterministically.
+func TestResyncFinishWaitsForInflightWorker(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, opts := newTestResyncer("workers", "arn1")
+		results := startResyncResults(func(r TargetReplicationResyncStatus) { s.incStats(r, opts) })
+
+		workers := []chan ReplicateObjectInfo{make(chan ReplicateObjectInfo, 1)}
+		var wg sync.WaitGroup
+		gotRoi := make(chan struct{})
+		release := make(chan struct{})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for roi := range workers[0] {
+				close(gotRoi)
+				<-release
+				// Mirror the real worker's send; recover so that if finish()
+				// wrongly closed the result channel first, the test fails via the
+				// assertion below instead of crashing on send-on-closed.
+				func() {
+					defer func() { _ = recover() }()
+					results.ch <- TargetReplicationResyncStatus{Object: roi.Name, ReplicatedCount: 1, ReplicatedSize: 500}
+				}()
+			}
+		}()
+		workers[0] <- ReplicateObjectInfo{Name: "inflight"}
+		<-gotRoi // worker holds a result in flight, not yet delivered
+
+		finishDone := make(chan struct{})
+		go func() {
+			results.finish(workers, &wg)
+			close(finishDone)
+		}()
+
+		synctest.Wait()
+		select {
+		case <-finishDone:
+			close(release)
+			synctest.Wait()
+			t.Fatal("finish() closed the result channel before the in-flight worker finished (worker wait missing)")
+		default:
+			// finish() is durably blocked in workerWg.Wait() - correct.
+		}
+
+		close(release)
+		synctest.Wait()
+		<-finishDone
+		st := s.statusMap[opts.bucket].TargetsMap[opts.arn]
+		if st.ReplicatedCount != 1 || st.ReplicatedSize != 500 {
+			t.Fatalf("status after finish = {replicated:%d/%d}, want {1/500}", st.ReplicatedCount, st.ReplicatedSize)
+		}
+	})
 }
