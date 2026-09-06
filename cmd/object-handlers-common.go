@@ -340,6 +340,28 @@ func canonicalizeETag(etag string) string {
 	return etagRegex.ReplaceAllString(etag, "$1")
 }
 
+// deleteIfMatchPreconditionFailed reports whether the If-Match precondition on a
+// DeleteObject request fails, in which case the delete must be refused with 412.
+// It is pure and never writes to the ResponseWriter: DeleteObject may evaluate
+// the precondition off the request goroutine (e.g. during multi-pool cleanup).
+//
+//   - A delete marker (a non-live latest version) has no entity-tag to match, so
+//     any If-Match value, including "*", fails against it.
+//   - "*" matches any existing live object, so it only requires existence.
+//   - A concrete ETag is compared against the object's public ETag. For
+//     SSE-C/SSE-KMS objects the public ETag is derived from the stored suffix
+//     without the customer key (getDecryptedETag), so a satisfiable condition is
+//     never rejected merely because the caller did not supply the key.
+func deleteIfMatchPreconditionFailed(h http.Header, ifMatch string, oi ObjectInfo) bool {
+	if oi.DeleteMarker {
+		return true
+	}
+	if strings.TrimSpace(ifMatch) == "*" {
+		return false
+	}
+	return !isETagEqual(getDecryptedETag(h, oi, false), ifMatch)
+}
+
 // isETagEqual return true if the canonical representations of two ETag strings
 // are equal, false otherwise
 func isETagEqual(left, right string) bool {
