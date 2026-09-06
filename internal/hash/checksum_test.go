@@ -257,3 +257,72 @@ func TestChecksumSerializeDeserializeMultiPart(t *testing.T) {
 		}
 	}
 }
+
+// TestGetContentChecksumTrailerWithHeaderValue covers the case where a checksum
+// is advertised via x-amz-trailer while its value is delivered as a request
+// header (no trailer is actually sent). The AWS Java SDK v2 does this on chunked
+// (aws-chunked) uploads that use STREAMING-AWS4-HMAC-SHA256-PAYLOAD (non-trailer)
+// but still list the checksum in x-amz-trailer. See issue #107. The header value
+// must be honored as a non-trailing checksum instead of being treated as an empty
+// trailing checksum.
+func TestGetContentChecksumTrailerWithHeaderValue(t *testing.T) {
+	const crc = "Hkksgg==" // CRC32 of "Hello CRC32!"
+
+	// Trailer advertised AND value present in header -> non-trailing, value honored.
+	h := http.Header{}
+	h.Set(xhttp.AmzTrailer, xhttp.AmzChecksumCRC32)
+	h.Set(xhttp.AmzChecksumCRC32, crc)
+	cs, err := GetContentChecksum(h)
+	if err != nil {
+		t.Fatalf("GetContentChecksum error = %v, want nil", err)
+	}
+	if cs == nil {
+		t.Fatal("GetContentChecksum returned nil checksum")
+	}
+	if cs.Type.Trailing() {
+		t.Errorf("checksum reported as trailing; want non-trailing since value is in the header")
+	}
+	if !cs.Type.Is(ChecksumCRC32) {
+		t.Errorf("checksum type = %s, want CRC32", cs.Type.StringFull())
+	}
+	if cs.Encoded != crc {
+		t.Errorf("checksum value = %q, want %q", cs.Encoded, crc)
+	}
+
+	// Trailer advertised WITHOUT a header value -> stays trailing (unchanged).
+	h2 := http.Header{}
+	h2.Set(xhttp.AmzTrailer, xhttp.AmzChecksumCRC32)
+	cs2, err := GetContentChecksum(h2)
+	if err != nil {
+		t.Fatalf("GetContentChecksum (no header value) error = %v, want nil", err)
+	}
+	if cs2 == nil || !cs2.Type.Trailing() {
+		t.Errorf("checksum = %v, want a trailing CRC32 checksum", cs2)
+	}
+}
+
+// TestGetContentChecksumTrailerMalformedHeaderValue guards against turning a
+// malformed client-supplied checksum into a no-op. When a checksum is advertised
+// via x-amz-trailer and its header value is present but does not parse, the
+// request must be rejected (ErrInvalidChecksum) rather than silently dropped.
+// The mismatched x-amz-checksum-algorithm selector makes the regression visible:
+// without the guard, execution falls through to getContentChecksum which would
+// return (nil, nil) and install no validator at all.
+func TestGetContentChecksumTrailerMalformedHeaderValue(t *testing.T) {
+	h := http.Header{}
+	h.Set(xhttp.AmzTrailer, xhttp.AmzChecksumCRC32)
+	h.Set(xhttp.AmzChecksumCRC32, "AQID") // decodes to 3 bytes -> invalid CRC32
+	h.Set(xhttp.AmzChecksumAlgo, "SHA256")
+	cs, err := GetContentChecksum(h)
+	if !errors.Is(err, ErrInvalidChecksum) {
+		t.Fatalf("GetContentChecksum error = %v (checksum %v), want ErrInvalidChecksum", err, cs)
+	}
+
+	// Same, without the misleading algorithm selector: still an error.
+	h2 := http.Header{}
+	h2.Set(xhttp.AmzTrailer, xhttp.AmzChecksumCRC32)
+	h2.Set(xhttp.AmzChecksumCRC32, "AQID")
+	if _, err := GetContentChecksum(h2); !errors.Is(err, ErrInvalidChecksum) {
+		t.Fatalf("GetContentChecksum (no algo selector) error = %v, want ErrInvalidChecksum", err)
+	}
+}
