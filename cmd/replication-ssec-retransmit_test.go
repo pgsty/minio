@@ -551,6 +551,147 @@ func testAPISSECReplicaRetransmitOverExistingVersion(obj ObjectLayer, instanceTy
 		assertRetransmittedVersion(t, obj, apiRouter, credentials, bucketName, object, srcInfo.VersionID, "retransmit=multipart", data, sseHeaders)
 	})
 
+	t.Run("repairs-an-undecodable-existing-version", func(t *testing.T) {
+		// A pre-fix destination (issue #109) could persist an SSE-C replica as
+		// compress(ciphertext) or a re-encrypted body, leaving a stored length
+		// that is not a valid encryption stream. Resync repairs such a version by
+		// retransmitting the source's raw ciphertext, but the write must not first
+		// require the stored, damaged object to decrypt. See issue #120.
+		data := bytes.Repeat([]byte("SILO raw SSE-C recovery\n"), 400)
+		object := "ssec-duplicate/undecodable"
+		putCopyChecksumSource(t, apiRouter, credentials, bucketName, object, data, sseHeaders)
+
+		gr, err := obj.GetObjectNInfo(t.Context(), bucketName, object, nil, http.Header{}, ObjectOptions{
+			ReplicationRequest: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srcInfo := gr.ObjInfo
+		cipher, err := io.ReadAll(gr)
+		gr.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Stage the damage: overwrite the version with a body too short to be a
+		// valid encryption stream, standing in for the compression/re-encryption
+		// an old destination left behind. The staging write itself is a raw
+		// replica over the still-valid version, so it stores verbatim.
+		damaged := []byte("dmg!!")
+		if _, derr := sio.DecryptedSize(uint64(len(damaged))); derr == nil {
+			t.Fatalf("%s: fixture body of %d bytes is a valid stream length, not undecodable", instanceType, len(damaged))
+		}
+		stageHdrs := replicaHeaders(t, srcInfo)
+		stageURL := getPutObjectURL("", bucketName, object) + "?versionId=" + srcInfo.VersionID
+		stageReq, err := newTestSignedRequestV4(http.MethodPut, stageURL, int64(len(damaged)),
+			bytes.NewReader(damaged), replicator.AccessKey, replicator.SecretKey, stageHdrs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stageRec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(stageRec, stageReq)
+		if stageRec.Code != http.StatusOK {
+			t.Fatalf("%s: could not stage the damaged replica: %d %s", instanceType, stageRec.Code, stageRec.Body.String())
+		}
+		// The staged version is genuinely undecodable at the object layer, which
+		// is exactly what makes DecryptObjectInfo fail during the overwrite.
+		staged, err := obj.GetObjectInfo(t.Context(), bucketName, object, ObjectOptions{VersionID: srcInfo.VersionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, derr := staged.DecryptedSize(); derr == nil {
+			t.Fatalf("%s: staged replica is decodable, cannot exercise the repair path", instanceType)
+		}
+
+		// Retransmit the correct ciphertext over the same version. Before the
+		// raw-replica precondition exemption this failed with XMinioObjectTampered
+		// because the damaged object could not decrypt; it must now repair.
+		srcInfo.UserTags = "retransmit=undecodable"
+		hdrs := replicaHeaders(t, srcInfo)
+		putURL := getPutObjectURL("", bucketName, object) + "?versionId=" + srcInfo.VersionID
+		req, err := newTestSignedRequestV4(http.MethodPut, putURL, int64(len(cipher)),
+			bytes.NewReader(cipher), replicator.AccessKey, replicator.SecretKey, hdrs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: retransmit over an undecodable version status %d, want 200: %s", instanceType, rec.Code, rec.Body.String())
+		}
+		assertRetransmittedVersion(t, obj, apiRouter, credentials, bucketName, object, srcInfo.VersionID, "retransmit=undecodable", data, sseHeaders)
+	})
+
+	// setupHealthySSECVersion writes a normal SSE-C object and returns its
+	// ObjectInfo (for building replica headers), its ciphertext, and the
+	// client-visible ETag a keyed reader sees -- the decrypted ETag, which is
+	// distinct from the stored sealed ETag.
+	setupHealthySSECVersion := func(t *testing.T, object string, data []byte) (srcInfo ObjectInfo, cipher []byte, clientETag string) {
+		t.Helper()
+		putCopyChecksumSource(t, apiRouter, credentials, bucketName, object, data, sseHeaders)
+		gr, err := obj.GetObjectNInfo(t.Context(), bucketName, object, nil, http.Header{}, ObjectOptions{ReplicationRequest: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srcInfo = gr.ObjInfo
+		cipher, err = io.ReadAll(gr)
+		gr.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The client-visible ETag is the decrypted one, which the handler derives
+		// with the customer key through DecryptObjectInfo; compute it the same way.
+		keyHeader := http.Header{}
+		for k, v := range sseHeaders {
+			keyHeader.Set(k, v)
+		}
+		clientETag = getDecryptedETag(keyHeader, srcInfo, false)
+		if clientETag == "" || clientETag == srcInfo.ETag {
+			t.Fatalf("%s: client ETag %q is not distinct from the sealed ETag %q", instanceType, clientETag, srcInfo.ETag)
+		}
+		return srcInfo, cipher, clientETag
+	}
+
+	// A conditional replica PUT must compare the public precondition against the
+	// client-visible ETag, not the stored sealed one. Skipping DecryptObjectInfo
+	// for every raw SSE-C replica (not only a pure overwrite) left oi.ETag sealed
+	// and inverted both conditions.
+	t.Run("if-match-on-the-client-etag-proceeds", func(t *testing.T) {
+		object := "ssec-duplicate/cond-if-match"
+		srcInfo, cipher, clientETag := setupHealthySSECVersion(t, object, bytes.Repeat([]byte("cond-if-match-"), 64))
+		hdrs := replicaHeaders(t, srcInfo)
+		hdrs[xhttp.IfMatch] = "\"" + clientETag + "\""
+		req, err := newTestSignedRequestV4(http.MethodPut,
+			getPutObjectURL("", bucketName, object)+"?versionId="+srcInfo.VersionID,
+			int64(len(cipher)), bytes.NewReader(cipher), replicator.AccessKey, replicator.SecretKey, hdrs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: If-Match on the client ETag status %d, want 200: %s", instanceType, rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("if-none-match-on-the-client-etag-fails", func(t *testing.T) {
+		object := "ssec-duplicate/cond-if-none-match"
+		srcInfo, cipher, clientETag := setupHealthySSECVersion(t, object, bytes.Repeat([]byte("cond-if-none-"), 64))
+		hdrs := replicaHeaders(t, srcInfo)
+		hdrs[xhttp.IfNoneMatch] = "\"" + clientETag + "\""
+		req, err := newTestSignedRequestV4(http.MethodPut,
+			getPutObjectURL("", bucketName, object)+"?versionId="+srcInfo.VersionID,
+			int64(len(cipher)), bytes.NewReader(cipher), replicator.AccessKey, replicator.SecretKey, hdrs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		apiRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusPreconditionFailed {
+			t.Fatalf("%s: If-None-Match on the client ETag status %d, want 412: %s", instanceType, rec.Code, rec.Body.String())
+		}
+	})
 }
 
 // assertRetransmittedVersion checks that a retransmit landed on the addressed

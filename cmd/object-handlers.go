@@ -2227,9 +2227,21 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		r.Header.Get(xhttp.IfMatch) != "" ||
 		r.Header.Get(xhttp.IfNoneMatch) != "" {
 		opts.CheckPrecondFn = func(oi ObjectInfo) bool {
-			if _, err := DecryptObjectInfo(&oi, r); err != nil {
-				writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
-				return true
+			// A pure raw SSE-C replica overwrite (no public precondition) fully
+			// replaces the stored object, so the destination must not first
+			// require the stored object to decrypt: a replica an older destination
+			// bug left as compress(ciphertext) or double-encrypted has an invalid
+			// decrypted length, and requiring it here blocks the retransmission
+			// that repairs it. The predicate is the incoming request's restored
+			// SSE-C metadata, the same one checkPreconditionsPUT uses to exempt the
+			// version/ETag duplicate. A conditional request (If-Match/If-None-Match)
+			// still needs the decrypted, client-visible ETag, so it keeps the check.
+			ssecReplica := isReplicaTrusted(ctx) && crypto.SSEC.IsEncrypted(opts.UserDefined)
+			if !ssecReplica || r.Header.Get(xhttp.IfMatch) != "" || r.Header.Get(xhttp.IfNoneMatch) != "" {
+				if _, err := DecryptObjectInfo(&oi, r); err != nil {
+					writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+					return true
+				}
 			}
 			return checkPreconditionsPUT(ctx, w, r, oi, opts)
 		}
