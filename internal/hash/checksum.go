@@ -698,7 +698,25 @@ func GetContentChecksum(h http.Header) (*Checksum, error) {
 				for _, t := range BaseChecksumTypes {
 					if strings.EqualFold(t.Key(), header) {
 						duplicates = res != nil
-						res = NewChecksumWithType(t|ChecksumTrailing, "")
+						// A checksum can be advertised via x-amz-trailer while its
+						// value is still delivered in the request headers. The AWS
+						// Java SDK v2 does this on chunked (aws-chunked) uploads:
+						// it sends STREAMING-AWS4-HMAC-SHA256-PAYLOAD (no trailer),
+						// puts the precomputed value in x-amz-checksum-*, yet still
+						// lists it in x-amz-trailer, so no trailer ever arrives.
+						// When the value is present as a header, honor it directly
+						// instead of waiting for a trailer that will never be read.
+						if v := h.Get(t.Key()); v != "" {
+							res = NewChecksumWithType(t, v)
+							if res == nil {
+								// The value is supplied in the header but does
+								// not parse. A malformed client-supplied checksum
+								// is an error, not a reason to skip validation.
+								return nil, ErrInvalidChecksum
+							}
+						} else {
+							res = NewChecksumWithType(t|ChecksumTrailing, "")
+						}
 					}
 				}
 				if strings.HasPrefix(strings.ToLower(header), "x-amz-checksum-") && !isSupportedChecksumHeader(header) {
