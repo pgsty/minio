@@ -1305,7 +1305,7 @@ func (er erasureObjects) putObject(ctx context.Context, bucket string, object st
 		//
 		// Scope: correct for a single erasure set. A multi-pool deployment
 		// (duplicate versions across pools, ModTime ties, cross-pool lock
-		// authority) is out of scope and tracked in pgsty/silo#TBD-multipool-lock.
+		// authority) is out of scope and tracked in pgsty/silo#133.
 		if opts.ReplicaLockReconcile && err == nil {
 			reconcileStoredObjectLock(opts.UserDefined, storedObjectLockState(obj.UserDefined))
 		}

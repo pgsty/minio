@@ -1164,7 +1164,7 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 	//
 	// Scope: correct for a single erasure set. A multi-pool deployment (duplicate
 	// versions across pools, ModTime ties, cross-pool lock authority) is out of
-	// scope and tracked in pgsty/silo#TBD-multipool-lock.
+	// scope and tracked in pgsty/silo#133.
 	if opts.ReplicaLockReconcile && crypto.SSEC.IsEncrypted(fi.Metadata) {
 		// A persisted upload records the null version as an empty VersionID; look
 		// it up as the null version so the reconcile reads the addressed version's
