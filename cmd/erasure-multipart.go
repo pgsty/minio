@@ -1114,7 +1114,7 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 		auditObjectErasureSet(ctx, "CompleteMultipartUpload", object, &er)
 	}
 
-	if opts.CheckPrecondFn != nil {
+	if opts.CheckPrecondFn != nil || opts.ReplicaLockReconcile {
 		if !opts.NoLock {
 			ns := er.NewNSLock(bucket, object)
 			lkctx, err := ns.GetLock(ctx, globalOperationTimeout)
@@ -1126,18 +1126,24 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 			opts.NoLock = true
 		}
 
-		obj, err := er.getObjectInfo(ctx, bucket, object, opts)
-		if err == nil && opts.CheckPrecondFn(obj) {
-			return ObjectInfo{}, PreConditionFailed{}
-		}
-		if err != nil && !isErrVersionNotFound(err) && !isErrObjectNotFound(err) {
-			return ObjectInfo{}, err
-		}
+		// The Object Lock reconcile below needs the version being committed, read
+		// after checkUploadIDExists, so only the precondition read happens here;
+		// both run under this same write lock, held until the version is renamed
+		// into place.
+		if opts.CheckPrecondFn != nil {
+			obj, err := er.getObjectInfo(ctx, bucket, object, opts)
+			if err == nil && opts.CheckPrecondFn(obj) {
+				return ObjectInfo{}, PreConditionFailed{}
+			}
+			if err != nil && !isErrVersionNotFound(err) && !isErrObjectNotFound(err) {
+				return ObjectInfo{}, err
+			}
 
-		// if object doesn't exist return error for If-Match conditional requests
-		// If-None-Match should be allowed to proceed for non-existent objects
-		if err != nil && opts.HasIfMatch && (isErrObjectNotFound(err) || isErrVersionNotFound(err)) {
-			return ObjectInfo{}, err
+			// if object doesn't exist return error for If-Match conditional requests
+			// If-None-Match should be allowed to proceed for non-existent objects
+			if err != nil && opts.HasIfMatch && (isErrObjectNotFound(err) || isErrVersionNotFound(err)) {
+				return ObjectInfo{}, err
+			}
 		}
 	}
 
@@ -1147,6 +1153,42 @@ func (er erasureObjects) CompleteMultipartUpload(ctx context.Context, bucket str
 			return oi, toObjectErr(err, bucket)
 		}
 		return oi, toObjectErr(err, bucket, object, uploadID)
+	}
+
+	// A trusted SSE-C replica completion re-orders the Object Lock carried in the
+	// upload metadata against the version it is about to replace, read on this
+	// erasure set under the write lock held above, so a hold or retention that
+	// reached the version after this upload was initiated is not rolled back at
+	// completion (issue #120). Scoped to SSE-C uploads, the only ones this issue
+	// routes through completion.
+	//
+	// Scope: correct for a single erasure set. A multi-pool deployment (duplicate
+	// versions across pools, ModTime ties, cross-pool lock authority) is out of
+	// scope and tracked in pgsty/silo#133.
+	if opts.ReplicaLockReconcile && crypto.SSEC.IsEncrypted(fi.Metadata) {
+		// A persisted upload records the null version as an empty VersionID; look
+		// it up as the null version so the reconcile reads the addressed version's
+		// stored lock, not the latest version's.
+		lookupVersionID := fi.VersionID
+		if lookupVersionID == "" {
+			lookupVersionID = nullVersionID
+		}
+		curr, gerr := er.getObjectInfo(ctx, bucket, object, ObjectOptions{
+			VersionID:        lookupVersionID,
+			Versioned:        opts.Versioned,
+			VersionSuspended: opts.VersionSuspended,
+			NoLock:           true,
+		})
+		switch {
+		case gerr == nil:
+			reconcileStoredObjectLock(fi.Metadata, storedObjectLockState(curr.UserDefined))
+		case isErrVersionNotFound(gerr) || isErrObjectNotFound(gerr):
+			// No existing version to order against: keep the upload's own accepted
+			// lock, including a pre-upgrade upload that persisted values without
+			// their ordering timestamps.
+		default:
+			return oi, toObjectErr(gerr, bucket, object)
+		}
 	}
 
 	uploadIDPath := er.getUploadIDDir(bucket, object, uploadID)

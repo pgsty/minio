@@ -872,19 +872,29 @@ func putReplicationOpts(ctx context.Context, sc string, objInfo ObjectInfo) (put
 	if cc, ok := lkMap.Lookup(xhttp.CacheControl); ok {
 		putOpts.CacheControl = cc
 	}
-	if mode, ok := lkMap.Lookup(xhttp.AmzObjectLockMode); ok {
-		rmode := minio.RetentionMode(mode)
-		putOpts.Mode = rmode
+	mode, hasMode := lkMap.Lookup(xhttp.AmzObjectLockMode)
+	retainDateStr, hasRetainDate := lkMap.Lookup(xhttp.AmzObjectLockRetainUntilDate)
+	if hasMode {
+		putOpts.Mode = minio.RetentionMode(mode)
 	}
-	if retainDateStr, ok := lkMap.Lookup(xhttp.AmzObjectLockRetainUntilDate); ok {
+	// A removed retention is stored as an empty or absent mode and date; it is
+	// sent as a value-less update that still carries its ordering timestamp.
+	if hasRetainDate && retainDateStr != "" {
 		rdate, err := amztime.ISO8601Parse(retainDateStr)
 		if err != nil {
 			return putOpts, false, err
 		}
 		putOpts.RetainUntilDate = rdate
-		// set retention timestamp in opts
+	}
+	retainTmstampStr, hasRetainTmstamp := objInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]
+	if hasMode || hasRetainDate || hasRetainTmstamp {
+		// Send the ordering timestamp whenever the version carries one, even for a
+		// removal whose value keys are absent (the shape a retransmit PUT leaves),
+		// so the next hop can order the removal instead of keeping obsolete
+		// retention.
 		retTimestamp := objInfo.ModTime
-		if retainTmstampStr, ok := objInfo.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]; ok {
+		if hasRetainTmstamp {
+			var err error
 			retTimestamp, err = time.Parse(time.RFC3339Nano, retainTmstampStr)
 			if err != nil {
 				return putOpts, false, err
@@ -1615,11 +1625,14 @@ func (ri ReplicateObjectInfo) replicateAll(ctx context.Context, objectAPI Object
 			return rinfo
 		}
 	} else {
-		// SSEC objects will refuse HeadObject without the decryption key.
-		// Ignore the error, since we know the object exists and versioning prevents overwriting existing versions.
+		// The sender holds no customer key, so the target refuses HeadObject on
+		// an SSE-C object and the replica cannot be compared. The metadata-only
+		// CopyObject that a replicateMetadata action would run then fails on any
+		// non-empty object, because the undecryptable source checksum makes the
+		// target recompute one and rewrite the data. A full retransmit is the
+		// only action that completes.
 		if isSSEC && strings.Contains(cerr.Error(), errorCodes[ErrSSEEncryptedObject].Description) {
-			rinfo.ReplicationStatus = replication.Completed
-			rinfo.ReplicationAction = replicateNone
+			rAction = replicateAll
 			goto applyAction
 		}
 		// if target returns error other than NoSuchKey, defer replication attempt
@@ -1704,8 +1717,11 @@ applyAction:
 	} else {
 		putOpts, isMP, err := putReplicationOpts(ctx, tgt.StorageClass, objInfo)
 		if err != nil {
-			rinfo.Err = err
+			// rinfo was primed Completed above; a failure to build the write
+			// options means nothing reached the target, so mark it Failed and
+			// carry the error instead of reporting a phantom success.
 			rinfo.ReplicationStatus = replication.Failed
+			rinfo.Err = err
 			replLogIf(ctx, fmt.Errorf("failed to set replicate options for object %s/%s(%s) (target %s) err:%w", bucket, objInfo.Name, objInfo.VersionID, tgt.EndpointURL(), err))
 			sendEvent(eventArgs{
 				EventName:  event.ObjectReplicationNotTracked,

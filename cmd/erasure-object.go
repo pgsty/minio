@@ -1268,7 +1268,7 @@ func (er erasureObjects) putObject(ctx context.Context, bucket string, object st
 
 	data := r.Reader
 
-	if opts.CheckPrecondFn != nil {
+	if opts.CheckPrecondFn != nil || opts.ReplicaLockReconcile {
 		if !opts.NoLock {
 			ns := er.NewNSLock(bucket, object)
 			lkctx, err := ns.GetLock(ctx, globalOperationTimeout)
@@ -1281,17 +1281,33 @@ func (er erasureObjects) putObject(ctx context.Context, bucket string, object st
 		}
 
 		obj, err := er.getObjectInfo(ctx, bucket, object, opts)
-		if err == nil && opts.CheckPrecondFn(obj) {
-			return objInfo, PreConditionFailed{}
-		}
+		// A destination read that fails for a reason other than not-found must not
+		// be taken as a passed precondition or as absent lock state.
 		if err != nil && !isErrVersionNotFound(err) && !isErrObjectNotFound(err) {
 			return objInfo, err
 		}
+		if opts.CheckPrecondFn != nil {
+			if err == nil && opts.CheckPrecondFn(obj) {
+				return objInfo, PreConditionFailed{}
+			}
+			// if object doesn't exist return error for If-Match conditional requests
+			// If-None-Match should be allowed to proceed for non-existent objects
+			if err != nil && opts.HasIfMatch && (isErrObjectNotFound(err) || isErrVersionNotFound(err)) {
+				return objInfo, err
+			}
+		}
 
-		// if object doesn't exist return error for If-Match conditional requests
-		// If-None-Match should be allowed to proceed for non-existent objects
-		if err != nil && opts.HasIfMatch && (isErrObjectNotFound(err) || isErrVersionNotFound(err)) {
-			return objInfo, err
+		// Order this trusted SSE-C replica's Object Lock against the addressed
+		// version's stored state, read on this erasure set under the write lock,
+		// so a value that lost the ordering cannot overwrite a newer one committed
+		// after the handler decided (issue #120). Only reconcile against an
+		// existing version; on not-found the write's own accepted lock is kept.
+		//
+		// Scope: correct for a single erasure set. A multi-pool deployment
+		// (duplicate versions across pools, ModTime ties, cross-pool lock
+		// authority) is out of scope and tracked in pgsty/silo#133.
+		if opts.ReplicaLockReconcile && err == nil {
+			reconcileStoredObjectLock(opts.UserDefined, storedObjectLockState(obj.UserDefined))
 		}
 	}
 
