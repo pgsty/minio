@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/minio/madmin-go/v3"
+	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio/internal/bucket/replication"
 	xhttp "github.com/minio/minio/internal/http"
 )
@@ -527,4 +528,122 @@ func TestResyncFinishWaitsForInflightWorker(t *testing.T) {
 			t.Fatalf("status after finish = {replicated:%d/%d}, want {1/500}", st.ReplicatedCount, st.ReplicatedSize)
 		}
 	})
+}
+
+// TestResyncResultFor asserts the resync worker classifies a target from the
+// actual replication outcome, not from whether the target version merely exists.
+// The key regression is the "failed update over an existing version" case: a
+// quota-rejected update leaves the old version in place, and counting existence
+// (the previous behavior) would score it a success. It also checks a genuine
+// success, an errored-but-Completed result, a delete failure, a delete-marker
+// success (zero bytes), and an ARN that was never attempted.
+func TestResyncResultFor(t *testing.T) {
+	const arn = "arn:minio:replication::id:bucket"
+	obj := ReplicateObjectInfo{Name: "obj", Bucket: "bucket", Size: 196608}
+	deleteMarker := ReplicateObjectInfo{Name: "dm", Bucket: "bucket", Size: 0, DeleteMarker: true}
+
+	tests := []struct {
+		name                                           string
+		roi                                            ReplicateObjectInfo
+		rinfos                                         replicatedInfos
+		wantRepl, wantReplSize, wantFail, wantFailSize int64
+	}{
+		{
+			name: "completed update",
+			roi:  obj,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: arn, ReplicationStatus: replication.Completed, Size: 196608},
+			}},
+			wantRepl: 1, wantReplSize: 196608,
+		},
+		{
+			name: "failed update over existing version",
+			roi:  obj,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: arn, ReplicationStatus: replication.Failed, Err: fmt.Errorf("quota exceeded"), Size: 196608},
+			}},
+			wantFail: 1, wantFailSize: 196608,
+		},
+		{
+			name: "completed but errored is a failure",
+			roi:  obj,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: arn, ReplicationStatus: replication.Completed, Err: fmt.Errorf("boom"), Size: 196608},
+			}},
+			wantFail: 1, wantFailSize: 196608,
+		},
+		{
+			name: "delete failed",
+			roi:  deleteMarker,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: arn, ReplicationStatus: replication.Failed},
+			}},
+			wantFail: 1, wantFailSize: 0,
+		},
+		{
+			name: "delete marker replicated counts zero bytes",
+			roi:  deleteMarker,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: arn, ReplicationStatus: replication.Completed},
+			}},
+			wantRepl: 1, wantReplSize: 0,
+		},
+		{
+			name: "arn not attempted is a failure",
+			roi:  obj,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: "arn:minio:replication::id2:bucket", ReplicationStatus: replication.Completed, Size: 196608},
+			}},
+			wantFail: 1, wantFailSize: 196608,
+		},
+		{
+			name: "completed with zero size falls back to object size",
+			roi:  obj,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: arn, ReplicationStatus: replication.Completed, Size: 0},
+			}},
+			wantRepl: 1, wantReplSize: 196608,
+		},
+		{
+			name: "version purge complete is a success",
+			roi:  ReplicateObjectInfo{Name: "purge", Bucket: "bucket", Size: 196608, VersionPurgeStatus: replication.VersionPurgePending},
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				// a successful purge sets only VersionPurgeStatus; ReplicationStatus stays empty.
+				{Arn: arn, VersionPurgeStatus: replication.VersionPurgeComplete},
+			}},
+			wantRepl: 1, wantReplSize: 196608,
+		},
+		{
+			name: "version purge failed is a failure",
+			roi:  ReplicateObjectInfo{Name: "purge", Bucket: "bucket", Size: 196608, VersionPurgeStatus: replication.VersionPurgePending},
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				{Arn: arn, VersionPurgeStatus: replication.VersionPurgeFailed, Err: fmt.Errorf("quota exceeded")},
+			}},
+			wantFail: 1, wantFailSize: 196608,
+		},
+		{
+			name: "benign duplicate 412 is a success",
+			roi:  obj,
+			rinfos: replicatedInfos{Targets: []replicatedTargetInfo{
+				// the destination answers PreconditionFailed for an exact duplicate;
+				// replicateAll keeps Completed but retains the error.
+				{Arn: arn, ReplicationStatus: replication.Completed, Err: minio.ErrorResponse{Code: "PreconditionFailed"}, Size: 196608},
+			}},
+			wantRepl: 1, wantReplSize: 196608,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := resyncResultFor(tc.rinfos, arn, tc.roi)
+			if st.Object != tc.roi.Name || st.Bucket != tc.roi.Bucket {
+				t.Fatalf("object/bucket = %s/%s, want %s/%s", st.Object, st.Bucket, tc.roi.Name, tc.roi.Bucket)
+			}
+			if st.ReplicatedCount != tc.wantRepl || st.ReplicatedSize != tc.wantReplSize ||
+				st.FailedCount != tc.wantFail || st.FailedSize != tc.wantFailSize {
+				t.Fatalf("resyncResultFor = {replicated:%d/%d failed:%d/%d}, want {%d/%d %d/%d}",
+					st.ReplicatedCount, st.ReplicatedSize, st.FailedCount, st.FailedSize,
+					tc.wantRepl, tc.wantReplSize, tc.wantFail, tc.wantFailSize)
+			}
+		})
+	}
 }

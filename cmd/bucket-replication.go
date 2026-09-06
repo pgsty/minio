@@ -418,7 +418,12 @@ func checkReplicateDelete(ctx context.Context, bucket string, dobj ObjectToDelet
 // target cluster, the object version is marked deleted on the source and hidden from listing. It is permanently
 // deleted from the source when the VersionPurgeStatus changes to "Complete", i.e after replication succeeds
 // on target.
-func replicateDelete(ctx context.Context, dobj DeletedObjectReplicationInfo, objectAPI ObjectLayer) {
+// replicateDelete replicates a delete (delete marker or version purge) to all
+// applicable targets and returns the per-target replication outcome. Callers
+// that only trigger replication may ignore the return value; the resync path
+// uses it to classify success/failure per target rather than inferring it from
+// the mere presence or absence of the target version.
+func replicateDelete(ctx context.Context, dobj DeletedObjectReplicationInfo, objectAPI ObjectLayer) replicatedInfos {
 	var replicationStatus replication.StatusType
 	bucket := dobj.Bucket
 	versionID := dobj.DeleteMarkerVersionID
@@ -453,7 +458,7 @@ func replicateDelete(ctx context.Context, dobj DeletedObjectReplicationInfo, obj
 			Host:      globalLocalNodeName,
 			EventName: event.ObjectReplicationNotTracked,
 		})
-		return
+		return replicatedInfos{}
 	}
 	dsc, err := parseReplicateDecision(ctx, bucket, dobj.ReplicationState.ReplicateDecisionStr)
 	if err != nil {
@@ -471,7 +476,7 @@ func replicateDelete(ctx context.Context, dobj DeletedObjectReplicationInfo, obj
 			Host:      globalLocalNodeName,
 			EventName: event.ObjectReplicationNotTracked,
 		})
-		return
+		return replicatedInfos{}
 	}
 
 	// Lock the object name before starting replication operation.
@@ -492,7 +497,7 @@ func replicateDelete(ctx context.Context, dobj DeletedObjectReplicationInfo, obj
 			Host:      globalLocalNodeName,
 			EventName: event.ObjectReplicationNotTracked,
 		})
-		return
+		return replicatedInfos{}
 	}
 	ctx = lkctx.Context()
 	defer lk.Unlock(lkctx)
@@ -597,6 +602,7 @@ func replicateDelete(ctx context.Context, dobj DeletedObjectReplicationInfo, obj
 			EventName:  eventName,
 		})
 	}
+	return rinfos
 }
 
 func replicateDeleteToTarget(ctx context.Context, dobj DeletedObjectReplicationInfo, tgt *TargetClient) (rinfo replicatedTargetInfo) {
@@ -1035,7 +1041,12 @@ func getReplicationAction(oi1 ObjectInfo, oi2 minio.ObjectInfo, opType replicati
 
 // replicateObject replicates the specified version of the object to destination bucket
 // The source object is then updated to reflect the replication status.
-func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI ObjectLayer) {
+// replicateObject replicates a single object version to all applicable targets
+// and returns the per-target replication outcome. Callers that only trigger
+// replication may ignore the return value; the resync path uses it to classify
+// success/failure per target rather than inferring it from the mere existence
+// of the target version.
+func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI ObjectLayer) replicatedInfos {
 	var replicationStatus replication.StatusType
 	defer func() {
 		if replicationStatus.Empty() {
@@ -1068,7 +1079,7 @@ func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI Obje
 			UserAgent:  "Internal: [Replication]",
 			Host:       globalLocalNodeName,
 		})
-		return
+		return replicatedInfos{}
 	}
 	tgtArns := cfg.FilterTargetArns(replication.ObjectOpts{
 		Name:     object,
@@ -1088,7 +1099,7 @@ func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI Obje
 			Host:       globalLocalNodeName,
 		})
 		globalReplicationPool.Get().queueMRFSave(ri.ToMRFEntry())
-		return
+		return replicatedInfos{}
 	}
 	ctx = lkctx.Context()
 	defer lk.Unlock(lkctx)
@@ -1194,6 +1205,7 @@ func replicateObject(ctx context.Context, ri ReplicateObjectInfo, objectAPI Obje
 		ri.RetryCount++
 		globalReplicationPool.Get().queueMRFSave(ri.ToMRFEntry())
 	}
+	return rinfos
 }
 
 // replicateObject replicates object data for specified version of the object to destination bucket
@@ -2968,6 +2980,55 @@ func finalResyncStatus(status ResyncStatusType, ctxErr error, workerAborted bool
 	return status
 }
 
+// resyncTargetSucceeded reports whether this object (or delete) actually
+// replicated to the target, from the target's own outcome. A version purge
+// reports success through VersionPurgeStatus, not ReplicationStatus. For an
+// object or delete marker, success requires a Completed status; a retained
+// error is a real failure unless it is the benign duplicate 412 the
+// destination returns when it already holds this exact ETag and version, which
+// replicateAll deliberately keeps Completed.
+func resyncTargetSucceeded(t replicatedTargetInfo, roi ReplicateObjectInfo) bool {
+	if !roi.VersionPurgeStatus.Empty() {
+		return t.VersionPurgeStatus == replication.VersionPurgeComplete
+	}
+	if t.ReplicationStatus != replication.Completed {
+		return false
+	}
+	return t.Err == nil || minio.ToErrorResponse(t.Err).Code == "PreconditionFailed"
+}
+
+// resyncResultFor derives the resync outcome for target arn from the aggregate
+// replication result of a single object (or delete). The target counts as a
+// success only when its own replication Completed without error - not when the
+// target version merely exists. A target that Failed, errored, or was not
+// attempted for this object (its arn absent from the result) counts as a
+// failure, and the failed byte count is recorded (previously always zero).
+func resyncResultFor(rinfos replicatedInfos, arn string, roi ReplicateObjectInfo) TargetReplicationResyncStatus {
+	st := TargetReplicationResyncStatus{Object: roi.Name, Bucket: roi.Bucket}
+	for _, t := range rinfos.Targets {
+		if t.Arn != arn {
+			continue
+		}
+		if resyncTargetSucceeded(t, roi) {
+			sz := t.Size
+			if sz == 0 {
+				sz = roi.Size
+			}
+			st.ReplicatedCount++
+			st.ReplicatedSize += sz
+		} else {
+			st.FailedCount++
+			st.FailedSize += roi.Size
+		}
+		return st
+	}
+	// arn was not attempted for this object: a resync that cannot confirm the
+	// object reached the target is not a success.
+	st.FailedCount++
+	st.FailedSize += roi.Size
+	return st
+}
+
 // resyncBucket resyncs all qualifying objects as per replication rules for the target
 // ARN
 func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI ObjectLayer, heal bool, opts resyncOpts) {
@@ -3067,6 +3128,7 @@ func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI Object
 				default:
 				}
 				traceFn := s.trace(tgt.ResetID, fmt.Sprintf("%s/%s (%s)", opts.bucket, roi.Name, roi.VersionID))
+				var rinfos replicatedInfos
 				if roi.DeleteMarker || !roi.VersionPurgeStatus.Empty() {
 					versionID := ""
 					dmVersionID := ""
@@ -3089,37 +3151,26 @@ func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI Object
 						OpType:    replication.ExistingObjectReplicationType,
 						EventType: ReplicateExistingDelete,
 					}
-					replicateDelete(ctx, doi, objectAPI)
+					rinfos = replicateDelete(ctx, doi, objectAPI)
 				} else {
 					roi.OpType = replication.ExistingObjectReplicationType
 					roi.EventType = ReplicateExisting
-					replicateObject(ctx, roi, objectAPI)
+					rinfos = replicateObject(ctx, roi, objectAPI)
 				}
 
-				st := TargetReplicationResyncStatus{
-					Object: roi.Name,
-					Bucket: roi.Bucket,
-				}
-
-				_, err := tgt.StatObject(ctx, tgt.Bucket, roi.Name, minio.StatObjectOptions{
-					VersionID: roi.VersionID,
-					Internal: minio.AdvancedGetOptions{
-						ReplicationProxyRequest: "false",
-					},
-				})
-				sz := roi.Size
-				if err != nil {
-					if roi.DeleteMarker && isErrMethodNotAllowed(ErrorRespToObjectError(err, opts.bucket, roi.Name)) {
-						st.ReplicatedCount++
-					} else {
-						st.FailedCount++
+				// Classify success/failure from the actual replication outcome
+				// for this target, not from whether the target version merely
+				// exists (a rejected update leaves the old version in place).
+				st := resyncResultFor(rinfos, opts.arn, roi)
+				var traceSize int64
+				var traceErr error
+				for i := range rinfos.Targets {
+					if rinfos.Targets[i].Arn == opts.arn {
+						traceSize, traceErr = rinfos.Targets[i].Size, rinfos.Targets[i].Err
+						break
 					}
-					sz = 0
-				} else {
-					st.ReplicatedCount++
-					st.ReplicatedSize += roi.Size
 				}
-				traceFn(sz, err)
+				traceFn(traceSize, traceErr)
 				if !s.sendResyncResult(ctx, results.ch, st, &workerAborted) {
 					return
 				}
