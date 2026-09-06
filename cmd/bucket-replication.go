@@ -2886,6 +2886,88 @@ func (s *replicationResyncer) incStats(ts TargetReplicationResyncStatus, opts re
 	s.statusMap[opts.bucket] = m
 }
 
+// resyncResults consumes the per-object outcomes produced by the resync worker
+// pool and applies each to the in-memory resync status via apply. It centralizes
+// the finalization ordering so a status persisted after finish() returns always
+// reflects every result.
+type resyncResults struct {
+	ch    chan TargetReplicationResyncStatus
+	apply func(TargetReplicationResyncStatus)
+	wg    sync.WaitGroup
+}
+
+// newResyncResults starts the result-consuming goroutine that folds each worker
+// result into the bucket's resync status.
+func (s *replicationResyncer) newResyncResults(opts resyncOpts) *resyncResults {
+	return startResyncResults(func(r TargetReplicationResyncStatus) {
+		s.incStats(r, opts)
+		globalSiteResyncMetrics.updateMetric(r, opts.resyncID)
+	})
+}
+
+// startResyncResults starts a goroutine that applies every received result with
+// apply. Injecting the apply action keeps the shutdown ordering in finish()
+// testable.
+func startResyncResults(apply func(TargetReplicationResyncStatus)) *resyncResults {
+	rr := &resyncResults{
+		ch:    make(chan TargetReplicationResyncStatus, 1),
+		apply: apply,
+	}
+	rr.wg.Add(1)
+	go func() {
+		defer rr.wg.Done()
+		for r := range rr.ch {
+			rr.apply(r)
+		}
+	}()
+	return rr
+}
+
+// finish shuts the resync pipeline down in an order that guarantees a status
+// persisted afterwards reflects every result. It first closes the worker input
+// channels and waits for the producer workers to exit, so none can send on a
+// closed result channel (a hazard on early-return paths) and every submitted
+// result is delivered (a result a worker discards on cancellation is
+// intentionally not); only then does it close the result channel and wait for
+// the consumer to apply the last buffered result.
+func (rr *resyncResults) finish(workers []chan ReplicateObjectInfo, workerWg *sync.WaitGroup) {
+	for i := range workers {
+		xioutil.SafeClose(workers[i])
+	}
+	workerWg.Wait()
+	xioutil.SafeClose(rr.ch)
+	rr.wg.Wait()
+}
+
+// sendResyncResult delivers a worker's computed per-object result to ch,
+// returning false if the worker must stop first. On the resync-cancel signal it
+// records the abort - the already-computed result is dropped - so
+// finalResyncStatus can downgrade a Completed run; on ctx cancellation it stops
+// without recording, since finalResyncStatus's parent-context check covers that.
+func (s *replicationResyncer) sendResyncResult(ctx context.Context, ch chan<- TargetReplicationResyncStatus, st TargetReplicationResyncStatus, workerAborted *atomic.Bool) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-s.resyncCancelCh:
+		workerAborted.Store(true)
+		return false
+	case ch <- st:
+		return true
+	}
+}
+
+// finalResyncStatus downgrades a Completed status to Failed when the run could
+// not have observed every object: the parent context was canceled (workers then
+// return without sending their computed result) or a worker dropped a result on
+// the resync-cancel signal. Without this a persisted Completed would misrepresent
+// an incomplete resync.
+func finalResyncStatus(status ResyncStatusType, ctxErr error, workerAborted bool) ResyncStatusType {
+	if status == ResyncCompleted && (ctxErr != nil || workerAborted) {
+		return ResyncFailed
+	}
+	return status
+}
+
 // resyncBucket resyncs all qualifying objects as per replication rules for the target
 // ARN
 func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI ObjectLayer, heal bool, opts resyncOpts) {
@@ -2896,7 +2978,18 @@ func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI Object
 	}
 
 	resyncStatus := ResyncFailed
+	// workerAborted records that a worker dropped an already-computed result on
+	// the resync-cancel signal. With a canceled parent context (which makes
+	// workers return without sending their result), it means a Completed run did
+	// not actually observe every object - see finalResyncStatus below.
+	var workerAborted atomic.Bool
 	defer func() {
+		// Downgrade a Completed status whose counts are incomplete, so the
+		// persisted status is not a misleading Completed. Runs after results.finish
+		// drains (LIFO) and before markStatus persists - markStatus uses its own
+		// background context, so a parent cancellation during the drain would
+		// otherwise still record Completed.
+		resyncStatus = finalResyncStatus(resyncStatus, ctx.Err(), workerAborted.Load())
 		s.markStatus(resyncStatus, opts, objectAPI)
 		globalSiteResyncMetrics.incBucket(opts, resyncStatus)
 		s.workerCh <- struct{}{}
@@ -2952,16 +3045,14 @@ func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI Object
 		lastCheckpoint = st.Object
 	}
 	workers := make([]chan ReplicateObjectInfo, resyncParallelRoutines)
-	resultCh := make(chan TargetReplicationResyncStatus, 1)
-	defer xioutil.SafeClose(resultCh)
-	go func() {
-		for r := range resultCh {
-			s.incStats(r, opts)
-			globalSiteResyncMetrics.updateMetric(r, opts.resyncID)
-		}
-	}()
-
 	var wg sync.WaitGroup
+	// results consumes each worker's per-object outcome and folds it into the
+	// in-memory status. finish() (deferred below) stops the workers and drains
+	// every result before the deferred markStatus persists, so a Completed status
+	// cannot race the last incStats. Registered after the markStatus finalizer, so
+	// LIFO runs finish first.
+	results := s.newResyncResults(opts)
+	defer results.finish(workers, &wg)
 	for i := range resyncParallelRoutines {
 		wg.Add(1)
 		workers[i] = make(chan ReplicateObjectInfo, 100)
@@ -3029,12 +3120,8 @@ func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI Object
 					st.ReplicatedSize += roi.Size
 				}
 				traceFn(sz, err)
-				select {
-				case <-ctx.Done():
+				if !s.sendResyncResult(ctx, results.ch, st, &workerAborted) {
 					return
-				case <-s.resyncCancelCh:
-					return
-				case resultCh <- st:
 				}
 			}
 		}(ctx, i)
@@ -3071,10 +3158,6 @@ func (s *replicationResyncer) resyncBucket(ctx context.Context, objectAPI Object
 			workers[h%uint64(resyncParallelRoutines)] <- roi
 		}
 	}
-	for i := range resyncParallelRoutines {
-		xioutil.SafeClose(workers[i])
-	}
-	wg.Wait()
 	resyncStatus = ResyncCompleted
 }
 
