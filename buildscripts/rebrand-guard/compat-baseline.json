@@ -631,6 +631,7 @@
     "x-minio-replication-encrypted-multipart",
     "x-minio-replication-ready",
     "x-minio-replication-reset-status",
+    "x-minio-replication-server-side-encryption",
     "x-minio-replication-server-side-encryption-iv",
     "x-minio-replication-server-side-encryption-seal-algorithm",
     "x-minio-replication-server-side-encryption-sealed-key",

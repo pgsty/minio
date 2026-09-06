@@ -30,6 +30,7 @@ import (
 	"github.com/minio/minio/internal/auth"
 	"github.com/minio/minio/internal/crypto"
 	xhttp "github.com/minio/minio/internal/http"
+	"github.com/minio/sio"
 )
 
 // TestAPISSECReplicationTargetHead pins what the replication sender's target
@@ -549,6 +550,7 @@ func testAPISSECReplicaRetransmitOverExistingVersion(obj ObjectLayer, instanceTy
 		}
 		assertRetransmittedVersion(t, obj, apiRouter, credentials, bucketName, object, srcInfo.VersionID, "retransmit=multipart", data, sseHeaders)
 	})
+
 }
 
 // assertRetransmittedVersion checks that a retransmit landed on the addressed
@@ -1718,8 +1720,15 @@ func testReplicaLockReconcileNullVersion(obj ObjectLayer, instanceType, bucketNa
 		if err != nil {
 			t.Fatal(err)
 		}
+		// PutObjectPart now validates the DARE stream length (#119). This
+		// object-layer fixture needs an encrypted body before it can exercise
+		// the completion-time null-version metadata reconciliation.
+		var ciphertext bytes.Buffer
+		if _, err := sio.Encrypt(&ciphertext, bytes.NewReader([]byte("data")), sio.Config{Key: bytes.Repeat([]byte{1}, 32)}); err != nil {
+			t.Fatal(err)
+		}
 		part, err := obj.PutObjectPart(ctx, bucketName, object, res.UploadID, 1,
-			mustGetPutObjReader(t, bytes.NewReader([]byte("data")), 4, "", ""), ObjectOptions{})
+			mustGetPutObjReader(t, bytes.NewReader(ciphertext.Bytes()), int64(ciphertext.Len()), "", ""), ObjectOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
