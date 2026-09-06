@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/xml"
@@ -32,7 +33,6 @@ import (
 
 	"github.com/minio/minio/internal/auth"
 	"github.com/minio/minio/internal/crypto"
-	"github.com/minio/minio/internal/hash"
 	xhttp "github.com/minio/minio/internal/http"
 )
 
@@ -301,53 +301,57 @@ func TestAPIGetObjectAttributesEncryptedPartLengths(t *testing.T) {
 func testAPIGetObjectAttributesEncryptedPartLengths(obj ObjectLayer, instanceType, bucketName string,
 	apiRouter http.Handler, credentials auth.Credentials, t *testing.T,
 ) {
-	ctx := t.Context()
+	// Part lengths 5245473 and 1: the sum 5245474 is a valid encrypted stream
+	// length while the second part alone is not. Since pgsty/silo#119,
+	// PutObjectPart derives an encrypted part's plaintext length from the bytes
+	// written and rejects one that cannot be a valid stream, so an object with
+	// these per-part sizes can no longer be created through a normal write; it
+	// only exists as pre-#119 on-disk state or from an old peer. Inject that
+	// stored shape directly through the object layer and exercise the handler,
+	// which is what this test pins.
 	partLengths := []int64{5245473, 1}
 
-	// The marker alone is enough for crypto.IsEncrypted to report an encrypted
-	// object, which keeps both fixtures free of a sealed key while still
-	// driving the handler down the encrypted branch. A trusted SSE-C
-	// replication upload reaches the multipart state with real metadata,
-	// because it stores whatever part lengths the peer sends.
 	for _, variant := range []struct {
 		name     string
 		metadata map[string]string
 		tampered bool
 	}{
 		{
+			// Parts of an encrypted multipart object are separate streams, so an
+			// unconvertible one is corrupt and must fail the request.
 			name:     "separately-encrypted-parts",
 			metadata: map[string]string{crypto.MetaMultipart: ""},
 			tampered: true,
 		},
 		{
+			// A legacy encrypted object carries no multipart marker and is one
+			// continuous stream split into storage fragments that are not
+			// independently decryptable, so they keep their stored size.
 			name:     "legacy-single-stream",
 			metadata: map[string]string{crypto.MetaIV: "legacy"},
 		},
 	} {
 		t.Run(variant.name, func(t *testing.T) {
 			object := "attributes/parts-encrypted-" + variant.name
-			upload, err := obj.NewMultipartUpload(ctx, bucketName, object,
-				ObjectOptions{UserDefined: maps.Clone(variant.metadata)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			parts := make([]CompletePart, 0, len(partLengths))
+			var total int64
+			infoParts := make([]ObjectPartInfo, 0, len(partLengths))
 			for i, length := range partLengths {
-				body := bytes.Repeat([]byte("z"), int(length))
-				reader, err := hash.NewReader(ctx, bytes.NewReader(body), length, "", "", length)
-				if err != nil {
-					t.Fatal(err)
-				}
-				info, err := obj.PutObjectPart(ctx, bucketName, object, upload.UploadID, i+1,
-					NewPutObjReader(reader), ObjectOptions{})
-				if err != nil {
-					t.Fatal(err)
-				}
-				parts = append(parts, CompletePart{PartNumber: i + 1, ETag: info.ETag})
+				total += length
+				infoParts = append(infoParts, ObjectPartInfo{Number: i + 1, Size: length, ActualSize: length})
 			}
-			if _, err = obj.CompleteMultipartUpload(ctx, bucketName, object, upload.UploadID, parts, ObjectOptions{}); err != nil {
-				t.Fatal(err)
+			info := ObjectInfo{
+				Bucket:      bucketName,
+				Name:        object,
+				Size:        total,
+				ModTime:     UTCNow(),
+				IsLatest:    true,
+				UserDefined: maps.Clone(variant.metadata),
+				Parts:       infoParts,
 			}
+
+			previous := newObjectLayerFn()
+			setObjectLayer(&attributesPartsObjectLayer{ObjectLayer: obj, bucket: bucketName, object: object, info: info})
+			defer setObjectLayer(previous)
 
 			rec := attributesPartsSignedRequest(t, apiRouter, credentials, http.MethodGet,
 				getGetObjectURL("", bucketName, object)+"?attributes", nil,
@@ -359,7 +363,7 @@ func testAPIGetObjectAttributesEncryptedPartLengths(obj ObjectLayer, instanceTyp
 					t.Fatalf("%s status %d, want %d: %s", instanceType, rec.Code, wantErr.HTTPStatusCode, rec.Body.String())
 				}
 				var errResp APIErrorResponse
-				if err = xml.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+				if err := xml.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
 					t.Fatalf("decode error response: %v (%s)", err, rec.Body.String())
 				}
 				if errResp.Code != wantErr.Code {
@@ -372,7 +376,7 @@ func testAPIGetObjectAttributesEncryptedPartLengths(obj ObjectLayer, instanceTyp
 				t.Fatalf("%s status %d, want %d: %s", instanceType, rec.Code, http.StatusOK, rec.Body.String())
 			}
 			var response attributesPartsResponse
-			if err = xml.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			if err := xml.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 				t.Fatalf("decode GetObjectAttributes response: %v (%s)", err, rec.Body.String())
 			}
 			if len(response.ObjectParts.Parts) != len(partLengths) {
@@ -386,4 +390,21 @@ func testAPIGetObjectAttributesEncryptedPartLengths(obj ObjectLayer, instanceTyp
 			}
 		})
 	}
+}
+
+// attributesPartsObjectLayer returns a crafted ObjectInfo for one object so a
+// stored shape that pgsty/silo#119 no longer lets PutObjectPart create can be
+// handed to the GetObjectAttributes handler under test; every other call falls
+// through to the real layer.
+type attributesPartsObjectLayer struct {
+	ObjectLayer
+	bucket, object string
+	info           ObjectInfo
+}
+
+func (o *attributesPartsObjectLayer) GetObjectInfo(ctx context.Context, bucket, object string, opts ObjectOptions) (ObjectInfo, error) {
+	if bucket == o.bucket && object == o.object {
+		return o.info.Clone(), nil
+	}
+	return o.ObjectLayer.GetObjectInfo(ctx, bucket, object, opts)
 }
