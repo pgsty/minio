@@ -2947,6 +2947,20 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// If-Match conditional delete (see AWS S3 conditional deletes). Delete the
+	// object only if its current ETag matches the client-supplied value,
+	// otherwise the request is refused with 412 Precondition Failed and the
+	// object is left intact. The precondition is evaluated in
+	// erasureServerPools.DeleteObject, against the version that will actually be
+	// removed, while the delete lock is held, so the object cannot change
+	// between the ETag check and the delete.
+	if ifMatch := r.Header.Get(xhttp.IfMatch); ifMatch != "" {
+		opts.HasIfMatch = true
+		opts.CheckPrecondFn = func(oi ObjectInfo) bool {
+			return deleteIfMatchPreconditionFailed(r.Header, ifMatch, oi)
+		}
+	}
+
 	rcfg, _ := globalBucketObjectLockSys.Get(bucket)
 	if rcfg.LockEnabled && opts.DeletePrefix {
 		apiErr := toAPIError(ctx, errInvalidArgument)
@@ -3012,6 +3026,13 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 			return
 		}
 		if isErrObjectNotFound(err) || isErrVersionNotFound(err) {
+			if opts.HasIfMatch {
+				// A conditional (If-Match) delete cannot satisfy its
+				// precondition against a missing object, so surface the
+				// not-found error instead of the idempotent 204 response.
+				writeErrorResponse(ctx, w, toAPIError(ctx, err), r.URL)
+				return
+			}
 			// Send an event when the object is not found
 			objInfo.Name = object
 			objInfo.VersionID = opts.VersionID
