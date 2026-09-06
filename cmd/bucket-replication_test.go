@@ -647,3 +647,67 @@ func TestResyncResultFor(t *testing.T) {
 		})
 	}
 }
+
+// TestObjectNeedsResyncForARN asserts the resync dispatch is scoped to the
+// target being resynced. The worker pool runs for a single target (opts.arn),
+// so an object that only qualifies for a different target must be skipped: with
+// A/B rules and a resync of A, an object that needs replication only for B must
+// not be admitted to A's worker. Otherwise (after outcome-based classification)
+// A would be absent from that object's result and miscounted as an A failure.
+func TestObjectNeedsResyncForARN(t *testing.T) {
+	const (
+		arnA = "arn:minio:replication::id:bucket"
+		arnB = "arn:minio:replication::id2:bucket"
+	)
+	tests := []struct {
+		name     string
+		decision ResyncDecision
+		arn      string
+		want     bool
+	}{
+		{
+			name:     "target must resync",
+			decision: ResyncDecision{targets: map[string]ResyncTargetDecision{arnA: {Replicate: true}}},
+			arn:      arnA,
+			want:     true,
+		},
+		{
+			name:     "object qualifies for B only, resyncing A",
+			decision: ResyncDecision{targets: map[string]ResyncTargetDecision{arnB: {Replicate: true}}},
+			arn:      arnA,
+			want:     false,
+		},
+		{
+			name: "A present but not replicating, B replicating, resyncing A",
+			decision: ResyncDecision{targets: map[string]ResyncTargetDecision{
+				arnA: {Replicate: false},
+				arnB: {Replicate: true},
+			}},
+			arn:  arnA,
+			want: false,
+		},
+		{
+			name: "object qualifies for both, resyncing A",
+			decision: ResyncDecision{targets: map[string]ResyncTargetDecision{
+				arnA: {Replicate: true},
+				arnB: {Replicate: true},
+			}},
+			arn:  arnA,
+			want: true,
+		},
+		{
+			name:     "no resync decision",
+			decision: ResyncDecision{},
+			arn:      arnA,
+			want:     false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			roi := ReplicateObjectInfo{Name: "obj", Bucket: "bucket", ExistingObjResync: tc.decision}
+			if got := objectNeedsResyncForARN(roi, tc.arn); got != tc.want {
+				t.Fatalf("objectNeedsResyncForARN(arn=%s) = %v, want %v", tc.arn, got, tc.want)
+			}
+		})
+	}
+}
