@@ -1067,12 +1067,26 @@ type objectRetentionGetter interface {
 	GetObjectRetention(ctx context.Context, bucketName, objectName, versionID string) (*minio.RetentionMode, *time.Time, error)
 }
 
-// retentionRemovedAtSource reports whether oi carries the shape a removed retention leaves behind,
-// an object lock key present with an empty value (cmd/object-handlers.go:3211-3215).
+// retentionRemovedAtSource reports whether oi carries the shape a removed retention leaves behind.
+// Two representations persist. A retention removed directly on this cluster keeps the object lock
+// keys present with empty values (PutObjectRetentionHandler, cmd/object-handlers.go:3309-3316). A
+// removal that arrived by replication keeps only the retention ordering timestamp, with the mode
+// and retain-until-date keys absent, because restoreRetention and the replica update path write
+// the timestamp alone when the mode is empty (cmd/bucket-object-lock.go:388-399,
+// cmd/object-handlers.go:1782-1797). A present ordering timestamp paired with a non-empty mode is
+// a retention that was set, not removed, and must not be mistaken for one.
 func retentionRemovedAtSource(oi ObjectInfo) bool {
 	lkMap := caseInsensitiveMap(oi.UserDefined)
+	// Representation (1): an object lock key is present with an empty value.
 	for _, k := range []string{xhttp.AmzObjectLockMode, xhttp.AmzObjectLockRetainUntilDate} {
 		if v, ok := lkMap.Lookup(k); ok && v == "" {
+			return true
+		}
+	}
+	// Representation (2): a recorded retention ordering timestamp with the mode value absent or
+	// empty is a removal restoreRetention persisted without the empty public keys.
+	if _, ok := oi.UserDefined[ReservedMetadataPrefixLower+ObjectLockRetentionTimestamp]; ok {
+		if v, ok := lkMap.Lookup(xhttp.AmzObjectLockMode); !ok || v == "" {
 			return true
 		}
 	}

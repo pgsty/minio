@@ -844,6 +844,8 @@ func (f *fakeRetentionGetter) GetObjectRetention(_ context.Context, _, _, _ stri
 func TestRetentionRemovedAtSource(t *testing.T) {
 	modeKey := strings.ToLower(xhttp.AmzObjectLockMode)
 	dateKey := strings.ToLower(xhttp.AmzObjectLockRetainUntilDate)
+	tsKey := ReservedMetadataPrefixLower + ObjectLockRetentionTimestamp
+	stamp := "2026-09-06T01:00:00Z"
 	tests := []struct {
 		name string
 		meta map[string]string
@@ -856,6 +858,11 @@ func TestRetentionRemovedAtSource(t *testing.T) {
 		{"real retention", map[string]string{modeKey: "GOVERNANCE", dateKey: "2026-10-05T10:00:00.000Z"}, false},
 		{"canonical case", map[string]string{xhttp.AmzObjectLockMode: ""}, true},
 		{"empty user metadata", map[string]string{"x-amz-meta-foo": ""}, false},
+		// Representation (2): a replicated removal persists the ordering timestamp alone,
+		// with the mode and retain-until-date keys absent (restoreRetention).
+		{"timestamp only, mode absent", map[string]string{tsKey: stamp}, true},
+		{"timestamp with empty mode", map[string]string{tsKey: stamp, modeKey: ""}, true},
+		{"timestamp with real retention is a set, not a removal", map[string]string{tsKey: stamp, modeKey: "GOVERNANCE", dateKey: "2026-10-05T10:00:00.000Z"}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1026,6 +1033,71 @@ func TestReplicationActionForTargetNullVersionResync(t *testing.T) {
 			}
 			if tgt.calls != 0 {
 				t.Fatalf("GetObjectRetention called %d times, want 0", tgt.calls)
+			}
+		})
+	}
+}
+
+// TestReplicationActionForTargetTimestampOnlyRemoval covers representation (2) of a removed
+// retention. A removal that arrived by replication persists only the retention ordering timestamp,
+// with the mode and retain-until-date keys absent, because restoreRetention writes the timestamp
+// alone when the mode is empty (cmd/bucket-object-lock.go). The comparison in getReplicationAction
+// reads such a source as in sync with a matching destination, so only the GetObjectRetention
+// confirmation separates a destination that dropped the retention from one hiding it behind a
+// permission-filtered HEAD. The source is built through the real restoreRetention path so the
+// fixture is the metadata a replicated removal actually leaves on disk, not a hand-rolled map.
+func TestReplicationActionForTargetTimestampOnlyRemoval(t *testing.T) {
+	governance := minio.Governance
+	stamp := time.Date(2026, 9, 6, 1, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+
+	tests := []struct {
+		name      string
+		mode      *minio.RetentionMode
+		err       error
+		want      replicationAction
+		wantCalls int
+	}{
+		{
+			// The reference case: a destination that denies the retention read is
+			// indistinguishable from one still holding it, so the removal is resent.
+			name:      "retention hidden from HEAD by permissions",
+			err:       minio.ErrorResponse{Code: "AccessDenied"},
+			want:      replicateMetadata,
+			wantCalls: 1,
+		},
+		{
+			name:      "destination still holds the retention",
+			mode:      &governance,
+			want:      replicateMetadata,
+			wantCalls: 1,
+		},
+		{
+			name:      "removal confirmed by destination",
+			err:       minio.ErrorResponse{Code: "NoSuchObjectLockConfiguration"},
+			want:      replicateNone,
+			wantCalls: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			src, tgtInfo := newMatchingReplicationPair()
+			// Persist the timestamp-only tombstone the same way an applied replica removal does.
+			objectLockState{retentionTimestamp: stamp}.restoreRetention(src.UserDefined)
+			if !retentionRemovedAtSource(src) {
+				t.Fatalf("restoreRetention fixture not recognized as a removal: %v", src.UserDefined)
+			}
+			if _, ok := src.UserDefined[strings.ToLower(xhttp.AmzObjectLockMode)]; ok {
+				t.Fatalf("restoreRetention fixture wrote a mode key, fixture is not timestamp-only: %v", src.UserDefined)
+			}
+
+			tgt := &fakeRetentionGetter{mode: test.mode, err: test.err}
+			got := replicationActionForTarget(t.Context(), src, tgtInfo, replication.HealReplicationType, tgt, "bucket", "object")
+			if got != test.want {
+				t.Fatalf("replicationActionForTarget() = %q, want %q", got, test.want)
+			}
+			if tgt.calls != test.wantCalls {
+				t.Fatalf("GetObjectRetention called %d times, want %d", tgt.calls, test.wantCalls)
 			}
 		})
 	}
